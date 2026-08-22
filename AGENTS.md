@@ -326,6 +326,11 @@ The explicit rebase base is required for installer-created shallow clones.
 A plain `git rebase main` can see separately fetched tips as unrelated roots
 and attempt to replay the entire old upstream tree.
 
+`updates.notify` controls passive notices for GitHub-fork installs:
+`release` (default) follows newer `vYYYY.M.D` tags, `commit` follows every
+upstream-main advance, and quoted `"off"` disables notices. Keep
+`tests/hermes_cli/test_update_notify.py` aligned with this contract.
+
 Fork rules:
 
 - Commit fixes only on `custom`; one fix per commit.
