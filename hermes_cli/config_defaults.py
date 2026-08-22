@@ -3310,6 +3310,12 @@ DEFAULT_CONFIG = {
         #                         run (e.g. a deep feature branch that must
         #                         not accumulate update merge commits).
         "parked_branch_strategy": "switch",
+        # Update target branch. Defaults to "main"; a thin fork that deploys
+        # its fixes on a custom branch sets this to that branch (e.g.
+        # "custom") in config.yaml. The update pipeline then treats that
+        # branch as the deploy target and rebases it onto upstream/main.
+        # `hermes update --branch <name>` overrides it for a single run.
+        "branch": "main",
         # Refresh an already-installed cua-driver during `hermes update`.
         # The refresh is best-effort and macOS-only. Turn this off if the
         # upstream installer is not appropriate for the machine, for example

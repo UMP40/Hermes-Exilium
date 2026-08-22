@@ -10276,8 +10276,22 @@ def _resolve_update_branch(args) -> str:
     or whitespace-only values as the default" parsing so every consumer of
     ``--branch`` (check path, git-update path, ZIP-fallback path) agrees on
     the same answer.
+
+    The ``updates.branch`` config value selects the default. This is how a
+    thin fork pins its deploy branch (e.g. ``custom``) without requiring a
+    ``--branch`` flag on every update; the CLI flag always wins and a config
+    read failure falls back to ``main``.
     """
-    return (getattr(args, "branch", None) or "main").strip() or "main"
+    branch = (getattr(args, "branch", None) or "").strip()
+    if branch:
+        return branch
+    try:
+        from hermes_cli.config import load_config
+
+        configured = (load_config() or {}).get("updates", {}).get("branch")
+    except Exception:
+        configured = None
+    return (str(configured).strip() if configured else "") or "main"
 
 
 def _size_delta_label(saved_mb: float) -> str:
