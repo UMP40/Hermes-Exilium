@@ -145,6 +145,29 @@ Every former god file is a **facade** (public entry points + the names other pac
   `@pytest.mark.platforms(...)`, never by faking `sys.platform`; tests never write to `~/.hermes/`.
   Everything else: `tests/AGENTS.md`.
 
+## Thin-fork maintenance
+
+This repository deploys from `custom`; `main` remains a pure mirror of
+`upstream/main`. `updates.branch: custom` makes `hermes update`:
+
+1. fetch `upstream/main`;
+2. preserve the previous mirrored-main SHA as the fork rebase base;
+3. reset and mirror `main`;
+4. rebase only `custom`'s commits with `rebase --onto`;
+5. run fork-added tests, then force-push `custom` with a lease.
+
+The explicit rebase base is required for installer-created shallow clones.
+A plain `git rebase main` can see separately fetched tips as unrelated roots
+and attempt to replay the entire old upstream tree.
+
+Fork rules:
+
+- Commit fixes only on `custom`; one fix per commit.
+- Add a hermetic regression test under `tests/` for every fix.
+- Run `scripts/run_tests.sh tests/<file>.py` before pushing.
+- Never hand-force-push. The update workflow owns lease-guarded rewrites.
+- Keep `tests/hermes_cli/test_thin_fork_update.py` aligned with the workflow.
+
 ## Routing Table — working in X → read X/AGENTS.md
 
 | Area | Read | Covers |
