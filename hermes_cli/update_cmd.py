@@ -2506,6 +2506,187 @@ def _sync_with_upstream_if_needed(git_cmd: list[str], cwd: Path) -> None:
         )
         print("    Your local repo is updated, but your fork on GitHub may be behind.")
 
+#: Deploy branch of a thin fork. ``main`` stays a pure mirror of upstream;
+#: fixes live on this branch and are rebased onto the mirror on every update.
+_THIN_FORK_BRANCH = "custom"
+
+
+def _thin_fork_sync_main_mirror(git_cmd, cwd) -> bool:
+    """Point the fork's local ``main`` at ``upstream/main`` and push it.
+
+    Thin-fork contract: ``main`` is a pure mirror of the official repo — it
+    never carries fork commits. ``upstream/main`` must already be freshly
+    fetched (the caller does that). Restores the checkout to its original
+    branch. Returns True unless the mirror itself cannot be written.
+    """
+    current = (
+        subprocess.run(
+            git_cmd + ["rev-parse", "--abbrev-ref", "HEAD"],
+            cwd=cwd,
+            capture_output=True,
+            text=True, encoding="utf-8", errors="replace",
+        ).stdout.strip()
+        or None
+    )
+    # -B deliberately discards any stray local commits on main — the mirror
+    # semantics are the contract, and the parked-branch incident class
+    # (2026-08-17) is exactly what a "merge instead" fallback reintroduces.
+    main_reset = subprocess.run(
+        git_cmd + ["checkout", "-B", "main", "upstream/main"],
+        cwd=cwd,
+        capture_output=True,
+        text=True, encoding="utf-8", errors="replace",
+    )
+    if main_reset.returncode != 0:
+        print("  ✗ Could not reset main to upstream/main.")
+        if main_reset.stderr.strip():
+            print(f"    {main_reset.stderr.strip().splitlines()[0]}")
+        if current and current != "HEAD":
+            subprocess.run(
+                git_cmd + ["checkout", current], cwd=cwd, capture_output=True
+            )
+        return False
+    push = subprocess.run(
+        git_cmd + ["push", "origin", "main", "--force-with-lease"],
+        cwd=cwd,
+        capture_output=True,
+        text=True, encoding="utf-8", errors="replace",
+    )
+    if push.returncode != 0:
+        # Non-fatal, matching _sync_fork_with_upstream: the local mirror is
+        # current; the fork on GitHub lags and the next update retries.
+        print("  ℹ Local main synced to upstream, but could not push to fork")
+        if push.stderr.strip():
+            print(f"    {push.stderr.strip().splitlines()[0]}")
+    else:
+        print("  ✓ Fork main synced with upstream")
+    if current and current != "HEAD":
+        subprocess.run(
+            git_cmd + ["checkout", current], cwd=cwd, capture_output=True
+        )
+    return True
+
+
+def _discover_thin_fork_test_files(git_cmd, cwd) -> list:
+    """Test files first introduced on the fork's custom branch.
+
+    ``git log --diff-filter=A main..custom`` names files the fork added
+    relative to the upstream mirror — the fork's own regression tests.
+    Only ``*.py`` files that still exist on disk are returned.
+    """
+    try:
+        result = subprocess.run(
+            git_cmd
+            + ["log", "--format=", "--name-only", "--diff-filter=A",
+               "main..custom", "--", "tests"],
+            cwd=cwd,
+            capture_output=True,
+            text=True, encoding="utf-8", errors="replace",
+            check=True,
+        )
+    except subprocess.CalledProcessError:
+        return []
+    files = []
+    for line in result.stdout.splitlines():
+        line = line.strip()
+        if line.endswith(".py") and (cwd / line).is_file():
+            files.append(line)
+    return sorted(set(files))
+
+
+def _run_thin_fork_regression_tests(git_cmd, cwd, test_runner=None) -> bool:
+    """Run the fork's own regression tests via ``scripts/run_tests.sh``.
+
+    Returns True when every discovered fork-added test file passes, or when
+    there are none to run (loud warning, not a silent skip). ``test_runner``
+    is injectable for tests; it defaults to the checkout's run_tests.sh,
+    which enforces CI parity (hermetic env, per-file subprocess isolation).
+    """
+    files = _discover_thin_fork_test_files(git_cmd, cwd)
+    if not files:
+        print(
+            "  ℹ No fork-added test files under tests/ — regression gate "
+            "skipped (add tests with each fix)"
+        )
+        return True
+    runner = test_runner or [str(cwd / "scripts" / "run_tests.sh")]
+    print(f"  → Running fork regression tests ({len(files)} file(s))...")
+    result = subprocess.run(
+        runner + files,
+        cwd=cwd,
+        capture_output=True,
+        text=True, encoding="utf-8", errors="replace",
+    )
+    if result.returncode != 0:
+        print("  ✗ Fork regression tests FAILED:")
+        tail = result.stdout.splitlines()[-15:] if result.stdout else []
+        for line in tail:
+            print(f"    {line}")
+        return False
+    print("  ✓ Fork regression tests passed")
+    return True
+
+
+def _thin_fork_update_workflow(git_cmd, cwd, test_runner=None) -> bool:
+    """Sync a thin fork: mirror main, rebase custom, gate on tests, push.
+
+    The thin-fork update model (deploy branch ``custom``):
+      1. ``main`` is reset to the freshly fetched ``upstream/main`` and
+         force-pushed to origin (pure mirror — never carries fork commits).
+      2. ``custom`` is rebased onto the new ``main``. A conflict aborts the
+         rebase and stops the update; nothing is pushed.
+      3. The fork's own regression tests (files added under ``tests/`` on
+         ``custom``) must pass before anything is pushed.
+      4. ``custom`` is force-pushed to origin.
+
+    Push failures are warnings, not blockers — the local checkout is already
+    on the new code and the next update retries the push. Returns True when
+    the working tree sits on the rebased ``custom``.
+    """
+    if not _thin_fork_sync_main_mirror(git_cmd, cwd):
+        return False
+    checkout = subprocess.run(
+        git_cmd + ["checkout", _THIN_FORK_BRANCH],
+        cwd=cwd,
+        capture_output=True,
+        text=True, encoding="utf-8", errors="replace",
+    )
+    if checkout.returncode != 0:
+        print(f"  ✗ Could not switch to '{_THIN_FORK_BRANCH}':")
+        if checkout.stderr.strip():
+            print(f"    {checkout.stderr.strip().splitlines()[0]}")
+        return False
+    rebase = subprocess.run(
+        git_cmd + ["rebase", "main"],
+        cwd=cwd,
+        capture_output=True,
+        text=True, encoding="utf-8", errors="replace",
+    )
+    if rebase.returncode != 0:
+        subprocess.run(
+            git_cmd + ["rebase", "--abort"], cwd=cwd, capture_output=True
+        )
+        print(f"  ✗ Rebase of '{_THIN_FORK_BRANCH}' onto main failed (conflict?).")
+        print(f"    Rebase aborted; '{_THIN_FORK_BRANCH}' is unchanged.")
+        print(f"    Resolve manually: cd {cwd} && git rebase main")
+        return False
+    if not _run_thin_fork_regression_tests(git_cmd, cwd, test_runner=test_runner):
+        return False
+    push = subprocess.run(
+        git_cmd + ["push", "origin", _THIN_FORK_BRANCH, "--force-with-lease"],
+        cwd=cwd,
+        capture_output=True,
+        text=True, encoding="utf-8", errors="replace",
+    )
+    if push.returncode != 0:
+        print("  ℹ Local custom rebased, but could not push to fork")
+        if push.stderr.strip():
+            print(f"    {push.stderr.strip().splitlines()[0]}")
+    else:
+        print(f"  ✓ Fork '{_THIN_FORK_BRANCH}' synced with upstream")
+    return True
+
+
 def _invalidate_update_cache():
     """Delete the update-check cache for ALL profiles so no banner
     reports a stale "commits behind" count after a successful update.
@@ -3320,7 +3501,35 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
     )
     depth_args = ["--depth", "1"] if is_shallow else []
 
-    if branch == "main":
+    thin_fork_check = (
+        branch == _THIN_FORK_BRANCH
+        and _is_fork(_get_origin_url(git_cmd, _m().PROJECT_ROOT))
+    )
+    if thin_fork_check:
+        # Thin fork: the deploy branch is derived from upstream/main by
+        # rebase, so the interesting comparison is against upstream, not
+        # origin/custom (which only mirrors what an update already pushed).
+        print("→ Fetching from upstream...")
+        fetch_result = subprocess.run(
+            git_cmd + ["fetch"] + depth_args + ["upstream", "main"],
+            cwd=_m().PROJECT_ROOT,
+            capture_output=True,
+            text=True, encoding="utf-8", errors="replace",
+        )
+        if fetch_result.returncode == 0:
+            upstream_exists = True
+            compare_branch = "upstream/main"
+        else:
+            print("→ Fetching from origin...")
+            fetch_result = subprocess.run(
+                git_cmd + ["fetch"] + depth_args + ["origin", branch],
+                cwd=_m().PROJECT_ROOT,
+                capture_output=True,
+                text=True, encoding="utf-8", errors="replace",
+            )
+            upstream_exists = False
+            compare_branch = f"origin/{branch}"
+    elif branch == "main":
         # Probe locally (~6 ms) whether an 'upstream' remote exists at all
         # before spending a network fetch on it. Non-fork installs have no
         # 'upstream' remote, and the old flow burned a failed network attempt
@@ -6075,6 +6284,10 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # minutes on a non-single-branch checkout. Fetch only what we update
         # against.
         branch = _m()._resolve_update_branch(args)
+        # Thin-fork mode: origin is a fork and the deploy branch is the
+        # fork's custom branch. main is then a pure mirror of upstream and
+        # the code swap is mirror + rebase instead of merge.
+        thin_fork_mode = is_fork and branch == _THIN_FORK_BRANCH
 
         # Self-heal abandoned git lock files (e.g. .git/shallow.lock left by a
         # crashed fetch) before the fetch — otherwise the update fails with
@@ -6086,13 +6299,36 @@ def _cmd_update_impl(args, gateway_mode: bool):
         if cleared:
             print("  (removed stale git lock(s): %s)" % ", ".join(cleared))
 
-        print("→ Fetching updates...")
-        fetch_result = subprocess.run(
-            git_cmd + ["fetch", "origin", branch],
-            cwd=_m().PROJECT_ROOT,
-            capture_output=True,
-            text=True, encoding="utf-8", errors="replace",
-        )
+        if thin_fork_mode:
+            # Thin fork: the source of truth is upstream/main — custom is
+            # derived from it by rebase, and origin/custom only ever mirrors
+            # what this update pushes.
+            if not _has_upstream_remote(git_cmd, _m().PROJECT_ROOT):
+                print()
+                print(
+                    f"✗ Thin-fork deploy branch '{_THIN_FORK_BRANCH}' requires "
+                    "an 'upstream' remote pointing at the official repo."
+                )
+                print(
+                    "  Run: git remote add upstream "
+                    "https://github.com/NousResearch/hermes-agent.git"
+                )
+                sys.exit(1)
+            print("→ Fetching upstream...")
+            fetch_result = subprocess.run(
+                git_cmd + ["fetch", "upstream", "main"],
+                cwd=_m().PROJECT_ROOT,
+                capture_output=True,
+                text=True, encoding="utf-8", errors="replace",
+            )
+        else:
+            print("→ Fetching updates...")
+            fetch_result = subprocess.run(
+                git_cmd + ["fetch", "origin", branch],
+                cwd=_m().PROJECT_ROOT,
+                capture_output=True,
+                text=True, encoding="utf-8", errors="replace",
+            )
         if fetch_result.returncode != 0:
             _print_fetch_failure(fetch_result.stderr)
             sys.exit(1)
@@ -6172,7 +6408,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     logger.debug(
                         "Could not read updates.parked_branch_strategy: %s", exc
                     )
-                if _in_place_configured and not switch_branch:
+                if _in_place_configured and not switch_branch and not thin_fork_mode:
                     # The merge source must exist upstream; --branch typos
                     # previously surfaced through the checkout failing, which
                     # does not run on this path.
@@ -6259,8 +6495,9 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # The zero/nonzero gate is still sound (HEAD == origin/<branch> counts
         # 0), so keep it, but treat the shallow NUMBER as unknown and recover
         # the real one via the GitHub compare API when possible.
+        count_ref = "upstream/main" if thin_fork_mode else f"origin/{branch}"
         result = subprocess.run(
-            git_cmd + ["rev-list", f"HEAD..origin/{branch}", "--count"],
+            git_cmd + ["rev-list", f"HEAD..{count_ref}", "--count"],
             cwd=_m().PROJECT_ROOT,
             capture_output=True,
             text=True, encoding="utf-8", errors="replace",
@@ -6317,9 +6554,16 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 # HEAD moving is itself proof of an update. Keep the update
                 # path active even if the informational count cannot be read.
                 commit_count = max(1, synced_count)
+        elif commit_count == 0 and thin_fork_mode:
+            # Thin fork: count==0 means custom already contains upstream/main,
+            # so the local HEAD will not move — the pre/post-SHA count lift
+            # above does not apply. The mirror push is all that's needed; the
+            # up-to-date path below handles the rest.
+            _thin_fork_sync_main_mirror(git_cmd, _m().PROJECT_ROOT)
 
         if commit_count == 0:
             _invalidate_update_cache()
+
 
             # Restore stash and switch back to original branch if we moved.
             # EXCEPTION: a parked feature branch we verified clean + fully
@@ -6484,19 +6728,44 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # the bad commit and the fix landing).
         pre_pull_sha = _capture_head_sha(git_cmd, _m().PROJECT_ROOT)
         try:
-            # Merge the ref we already fetched above (→ Fetching updates...)
-            # instead of `git pull`, which performs a SECOND network fetch of
-            # the same branch (~0.5-1.5 s of redundant round-trip per update).
-            # `merge --ff-only origin/<branch>` is byte-identical in effect to
-            # `pull --ff-only origin <branch>` given the fresh tracking ref;
-            # the divergence fallback below is unchanged.
-            pull_result = subprocess.run(
-                git_cmd + ["merge", "--ff-only", f"origin/{branch}"],
-                cwd=_m().PROJECT_ROOT,
-                capture_output=True,
-                text=True, encoding="utf-8", errors="replace",
-            )
-            if pull_result.returncode != 0:
+            if thin_fork_mode:
+                # Thin-fork code swap: mirror main to upstream, rebase custom
+                # onto it, gate on the fork's own regression tests, then push.
+                # There is no origin/<branch> fast-forward — the source of
+                # truth is upstream/main.
+                if not _thin_fork_update_workflow(git_cmd, _m().PROJECT_ROOT):
+                    print()
+                    print(
+                        "  ✗ Thin-fork update failed (rebase conflict or "
+                        "regression tests) — nothing was pushed."
+                    )
+                    print(
+                        f"  '{_THIN_FORK_BRANCH}' is unchanged; main was synced "
+                        "to upstream (harmless)."
+                    )
+                    if pre_pull_sha:
+                        subprocess.run(
+                            git_cmd + ["reset", "--hard", pre_pull_sha],
+                            cwd=_m().PROJECT_ROOT,
+                            capture_output=True,
+                            check=False,
+                        )
+                    sys.exit(1)
+                update_succeeded = True
+            else:
+                # Merge the ref we already fetched above (→ Fetching updates...)
+                # instead of `git pull`, which performs a SECOND network fetch of
+                # the same branch (~0.5-1.5 s of redundant round-trip per update).
+                # `merge --ff-only origin/<branch>` is byte-identical in effect to
+                # `pull --ff-only origin <branch>` given the fresh tracking ref;
+                # the divergence fallback below is unchanged.
+                pull_result = subprocess.run(
+                    git_cmd + ["merge", "--ff-only", f"origin/{branch}"],
+                    cwd=_m().PROJECT_ROOT,
+                    capture_output=True,
+                    text=True, encoding="utf-8", errors="replace",
+                )
+            if not thin_fork_mode and pull_result.returncode != 0:
                 # ff-only failed — local and remote have diverged. Before
                 # assuming an upstream force-push, check WHY: a checkout on a
                 # custom branch (local commits on top of origin/<branch>) also
