@@ -311,6 +311,29 @@ changing `pyproject.toml`. Reference: #2810 (bounds), #9801 (SHA pinning + audit
   change-detectors; ≤ 2 tests is the salvage bar too. Reject/rewrite in salvaged diffs:
   appendages to facades, new god helpers, compat aliases, wrappers.
 
+## Thin-fork maintenance
+
+This repository deploys from `custom`; `main` remains a pure mirror of
+`upstream/main`. `updates.branch: custom` makes `hermes update`:
+
+1. fetch `upstream/main`;
+2. preserve the previous mirrored-main SHA as the fork rebase base;
+3. reset and mirror `main`;
+4. rebase only `custom`'s commits with `rebase --onto`;
+5. run fork-added tests, then force-push `custom` with a lease.
+
+The explicit rebase base is required for installer-created shallow clones.
+A plain `git rebase main` can see separately fetched tips as unrelated roots
+and attempt to replay the entire old upstream tree.
+
+Fork rules:
+
+- Commit fixes only on `custom`; one fix per commit.
+- Add a hermetic regression test under `tests/` for every fix.
+- Run `scripts/run_tests.sh tests/<file>.py` before pushing.
+- Never hand-force-push. The update workflow owns lease-guarded rewrites.
+- Keep `tests/hermes_cli/test_thin_fork_update.py` aligned with the workflow.
+
 ## Testing (applies everywhere)
 
 **ALWAYS use `scripts/run_tests.sh`**, never bare `pytest`. It enforces CI parity: credential
