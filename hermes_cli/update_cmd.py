@@ -2546,8 +2546,23 @@ def _thin_fork_sync_main_mirror(git_cmd, cwd) -> bool:
                 git_cmd + ["checkout", current], cwd=cwd, capture_output=True
             )
         return False
+    # Refresh the origin/main tracking ref before the force-with-lease push.
+    # A single-branch custom clone (the fork installer's layout) never
+    # fetches main, so refs/remotes/origin/main is stale and the lease would
+    # reject the push forever. The explicit refspec updates the tracking ref
+    # regardless of the clone's fetch refspec.
+    subprocess.run(
+        git_cmd + ["fetch", "origin", "+refs/heads/main:refs/remotes/origin/main"],
+        cwd=cwd,
+        capture_output=True,
+        text=True, encoding="utf-8", errors="replace",
+    )
+    # Explicit lease base: `checkout -B main upstream/main` set main's
+    # tracking to upstream, so a bare --force-with-lease would lease against
+    # refs/remotes/upstream/main (the NEW tip) and reject forever.
     push = subprocess.run(
-        git_cmd + ["push", "origin", "main", "--force-with-lease"],
+        git_cmd + ["push", "origin", "main",
+                   "--force-with-lease=main:refs/remotes/origin/main"],
         cwd=cwd,
         capture_output=True,
         text=True, encoding="utf-8", errors="replace",
