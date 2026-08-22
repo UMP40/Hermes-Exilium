@@ -1348,6 +1348,16 @@ by `_THIN_FORK_BRANCH` + fork-origin detection) replaces the ordinary
 mode. When upstream has NOT advanced, `hermes update` only re-syncs the
 `main` mirror — it does not push `custom`.
 
+Startup update notices are driven by `updates.notify` (GitHub-fork
+installs only; code in `hermes_cli/banner.py`): `release` (default) —
+only when the official repo publishes a newer calendar release tag
+(`vYYYY.M.D`); `commit` — whenever upstream main advances past the
+checkout; `off` — no passive notice (quote it in YAML: `"off"`, the
+bare word parses as boolean). The release comparison uses HTTPS
+`ls-remote --tags` against the official repo and the local
+`hermes_cli/__init__.py` `__release_date__`; keep
+`tests/hermes_cli/test_update_notify.py` in sync when touching either.
+
 Rules for adding a fix:
 
 1. **One fix = one commit on `custom`**, so `git log main..custom` stays
