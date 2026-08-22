@@ -2164,6 +2164,12 @@ DEFAULT_CONFIG = {
         # merge origin/<target> INTO it after leaving a pre-update-<stamp> tag; a conflict stops the
         # update cleanly. `hermes update --switch-branch` overrides to switch for one run.
         "parked_branch_strategy": "switch",
+        # Update target branch. Defaults to "main"; a thin fork that deploys
+        # its fixes on a custom branch sets this to that branch (e.g.
+        # "custom") in config.yaml. The update pipeline then treats that
+        # branch as the deploy target and rebases it onto upstream/main.
+        # `hermes update --branch <name>` overrides it for a single run.
+        "branch": "main",
         # Refresh an installed cua-driver during `hermes update` (best-effort, macOS only). Turn off
         # e.g. on non-admin accounts where /Applications isn't writable.
         "refresh_cua_driver": True,

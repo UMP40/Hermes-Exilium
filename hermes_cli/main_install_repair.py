@@ -1241,5 +1241,14 @@ def _resolve_node_runtime_npm() -> str | None:
 
 
 def _resolve_update_branch(args) -> str:
-    """Normalize ``args.branch`` to a non-empty name (default ``main``; blank/whitespace = default)."""
-    return (getattr(args, "branch", None) or "main").strip() or "main"
+    """Resolve the CLI override, then ``updates.branch``, then ``main``."""
+    branch = (getattr(args, "branch", None) or "").strip()
+    if branch:
+        return branch
+    try:
+        from hermes_cli.config import load_config
+
+        configured = (load_config() or {}).get("updates", {}).get("branch")
+    except Exception:
+        configured = None
+    return (str(configured).strip() if configured else "") or "main"
