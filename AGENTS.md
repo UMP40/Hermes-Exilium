@@ -1324,6 +1324,62 @@ updater, serve/dashboard, and the gateway is being replaced by a
 gateway-owned control socket (#92091). Do not add new scan heuristics
 without checking that design; scans are the fallback layer.
 
+### Thin-fork maintenance (this repo)
+
+This checkout is a thin fork of `NousResearch/hermes-agent` that fixes
+upstream bugs without carrying a merge-commit history. Branch model:
+
+- **`main` is a pure mirror of `upstream/main`.** It NEVER carries fork
+  commits. `git checkout -B main upstream/main` intentionally discards
+  any stray commit left there — never commit fixes directly to `main`.
+- **`custom` is the deploy branch**: the fork's fixes, rebased onto
+  `main` on every update. `updates.branch: custom` in
+  `~/.hermes/config.yaml` (already set on this machine) makes
+  `hermes update` treat `custom` as the update target.
+
+When upstream advances, `hermes update` (code in
+`hermes_cli/update_cmd.py`: `_thin_fork_update_workflow`,
+`_thin_fork_sync_main_mirror`, `_discover_thin_fork_test_files`, gated
+by `_THIN_FORK_BRANCH` + fork-origin detection) replaces the ordinary
+`merge --ff-only origin/main` swap with: fetch `upstream main` → reset
+`main` to `upstream/main` and force-push it → rebase `custom` onto
+`main` → run the fork's own regression tests → force-push `custom`.
+`hermes update --check` also compares against `upstream/main` in this
+mode. When upstream has NOT advanced, `hermes update` only re-syncs the
+`main` mirror — it does not push `custom`.
+
+Rules for adding a fix:
+
+1. **One fix = one commit on `custom`**, so `git log main..custom` stays
+   a clean, reviewable series. Never mix unrelated fixes.
+2. **Every fix ships a test under `tests/`.** The update gate discovers
+   tests with `git log --diff-filter=A main..custom -- tests` — only
+   files the fork *added* relative to upstream. A fix without a new test
+   file is not gated and is pushed untested.
+3. **Tests must be hermetic**: no live network, no API keys.
+   `scripts/run_tests.sh` (invoked by the gate) enforces CI-parity env
+   isolation; a non-hermetic test fails the update and blocks the push.
+   Run the new test locally before committing:
+   `scripts/run_tests.sh tests/<file>.py -q`.
+4. **Ship a fix by pushing `custom`.** Run `hermes update` once upstream
+   has advanced: it rebases, runs the gate, and force-pushes both
+   branches. A failing test leaves `custom` local-only (rebase applied,
+   push blocked, exit 1); a rebase conflict aborts cleanly
+   (`rebase --abort`, `custom` unchanged, `main` mirror already synced —
+   harmless). To ship without waiting for upstream, push directly with
+   `git push origin custom` AFTER `scripts/run_tests.sh` has passed
+   locally — the gate only runs inside the update flow.
+5. **Never rewrite published history by hand.** A plain
+   `git push origin custom` (fast-forward of new commits) is fine;
+   force-pushes are owned by the workflow's `--force-with-lease`, which
+   keeps `main`/`custom` rebase-consistent after an upstream sync.
+
+The workflow and its contract live in
+`tests/hermes_cli/test_thin_fork_update.py` — extend it when the
+machinery changes, and keep the real-world smoke (`hermes update
+--check`, then a full update against actual upstream) as the final proof
+for any change to the gate or the rebase path.
+
 ### Gateway lifecycle vs. the Desktop app
 
 `hermes serve` (control plane, desktop-spawned child) dies with the app
