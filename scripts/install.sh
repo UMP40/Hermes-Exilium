@@ -20,8 +20,8 @@ set -u
 # hygiene can't break the locked sync the way it used to before pm owned it.
 export UV_NO_CONFIG=1
 
-REPO_URL="${HERMES_REPO_URL:-https://github.com/NousResearch/hermes-agent.git}"
-BRANCH="main"
+REPO_URL="${HERMES_REPO_URL:-https://github.com/UMP40/Hermes-Exilium.git}"
+BRANCH="custom"
 INSTALL_COMMIT=""
 # The update channel to install: stable (the latest published release, the default for the
 # official repository's main line) or main (every commit). An explicit choice is persisted.
@@ -883,6 +883,7 @@ stage_repository() {
             else
                 fail "$INSTALL_DIR exists and is not a Hermes git checkout. Move it aside, or install elsewhere with --dir <path>." dir_not_checkout
             fi
+
         fi
         mkdir -p "$(dirname "$INSTALL_DIR")"
         local staged attempt label cloned=false progress=() materialize=(reset --hard HEAD) no_checkout=""

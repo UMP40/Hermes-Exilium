@@ -22,7 +22,7 @@
 #                         `hermes update --set-channel`
 [CmdletBinding(PositionalBinding=$false)]
 param(
-    [string]$Branch = "main",
+    [string]$Branch = "custom",
     [string]$Commit = "",
     [string]$Channel = $(if ($env:HERMES_INSTALL_CHANNEL) { $env:HERMES_INSTALL_CHANNEL } else { "" }),
     [string]$HermesHome = $(if ($env:HERMES_HOME) { $env:HERMES_HOME } else { "$env:LOCALAPPDATA\hermes" }),
@@ -76,7 +76,7 @@ $script:BoundParams = $PSBoundParameters
 # Under iex, script scope is the caller's session and outlives a run; start
 # each run without the previous run's answer (see Set-LauncherUserPath).
 $script:BinDirOnCallerPath = $null
-$RepoUrl = if ($env:HERMES_REPO_URL) { $env:HERMES_REPO_URL } else { "https://github.com/NousResearch/hermes-agent.git" }
+$RepoUrl = if ($env:HERMES_REPO_URL) { $env:HERMES_REPO_URL } else { "https://github.com/UMP40/Hermes-Exilium.git" }
 
 # --- BEGIN GENERATED: bootstrap pins (scripts/gen-bootstrap-pins.py) ---
 # Derived from pm/lock.json. DO NOT EDIT BY HAND:
@@ -1478,12 +1478,14 @@ function Confirm-DesktopArtifact {
             } else {
                 Write-Warn "icacls AppContainer grant returned exit $LASTEXITCODE for $appDir"
             }
+
         } catch {
             Write-Warn "Could not grant AppContainer ACL: $($_.Exception.Message)"
         }
     } finally {
         Pop-Location
     }
+
     New-DesktopShortcuts -TargetExe $desktopExe
 }
 
