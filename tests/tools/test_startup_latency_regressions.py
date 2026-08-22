@@ -161,10 +161,11 @@ class TestBannerUpdateCheckNonBlocking:
             banner._update_result = 3
             done.set()
             deadline = time.time() + 5
-            while not printed and time.time() < deadline:
+            while not captured and time.time() < deadline:
                 time.sleep(0.02)
         assert printed, "deferred update notice never reached prompt_toolkit's renderer"
         assert isinstance(printed[0], ANSI)
         visible = "".join(text for _style, text, *_ in to_formatted_text(printed[0]))
         assert "3 commits behind" in visible
         assert "\x1b" not in visible and "[bold" not in visible
+
