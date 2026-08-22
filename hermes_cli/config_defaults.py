@@ -2170,6 +2170,8 @@ DEFAULT_CONFIG = {
         # branch as the deploy target and rebases it onto upstream/main.
         # `hermes update --branch <name>` overrides it for a single run.
         "branch": "main",
+        # Startup notice mode for GitHub fork installs: release, commit, or off.
+        "notify": "release",
         # Refresh an installed cua-driver during `hermes update` (best-effort, macOS only). Turn off
         # e.g. on non-admin accounts where /Applications isn't writable.
         "refresh_cua_driver": True,
