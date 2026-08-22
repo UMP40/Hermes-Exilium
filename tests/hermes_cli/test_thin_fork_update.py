@@ -143,6 +143,25 @@ def test_mirror_sync_advances_main_and_pushes(fork_world):
     assert _remote_head(fork_world.fork, fork_world.origin, "main") == upstream_tip
 
 
+def test_mirror_sync_pushes_main_on_single_branch_custom_clone(fork_world):
+    """install.sh fork layout: ``clone --branch custom`` leaves the fetch
+    refspec covering only custom, so refs/remotes/origin/main never exists.
+    The mirror sync must still push main (lease base refreshed explicitly).
+    """
+    _git(
+        fork_world.fork, "config", "remote.origin.fetch",
+        "+refs/heads/custom:refs/remotes/origin/custom",
+    )
+    _git(fork_world.fork, "update-ref", "-d", "refs/remotes/origin/main")
+    _advance_upstream(fork_world)
+    upstream_tip = _remote_head(fork_world.fork, fork_world.upstream, "main")
+
+    assert update_cmd._thin_fork_sync_main_mirror(GIT, fork_world.fork) is True
+
+    assert _remote_head(fork_world.fork, fork_world.origin, "main") == upstream_tip
+    assert _git(fork_world.fork, "rev-parse", "main").stdout.strip() == upstream_tip
+
+
 # ---------------------------------------------------------------------------
 # Full workflow
 # ---------------------------------------------------------------------------
