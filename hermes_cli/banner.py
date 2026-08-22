@@ -143,6 +143,7 @@ def get_available_skills() -> Dict[str, List[str]]:
     return {} if result is _UNCACHED else result
 
 
+
 def _resolve_repo_dir() -> Optional[Path]:
     """The active Hermes git checkout, or None if this isn't a git install.
 
@@ -321,6 +322,11 @@ def get_update_result(timeout: float = 0.5) -> Optional[int]:
 def _format_update_notice(behind: int) -> str:
     """Render the update warning line for a non-zero ``behind`` result."""
     from hermes_cli.config import get_managed_update_command, recommended_update_command
+    if behind == UPDATE_RELEASE_AVAILABLE:
+        return (
+            "[bold yellow]⚠ new official release available[/]"
+            f"[dim yellow] — run [bold]{recommended_update_command()}[/bold] to rebase the fork[/]"
+        )
     if behind > 0:
         return (
             f"[bold yellow]⚠ {behind} {_plural(behind, 'commit')} behind[/]"
