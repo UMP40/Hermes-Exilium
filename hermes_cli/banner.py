@@ -5,6 +5,7 @@ Pure display functions with no HermesCLI state dependency.
 import json
 import logging
 import os
+import re
 import shutil
 import subprocess
 import threading
@@ -138,6 +139,11 @@ _UPDATE_CHECK_CACHE_SECONDS = 6 * 3600
 # (e.g. nix-built hermes — no local git history to count against).
 UPDATE_AVAILABLE_NO_COUNT = -1
 
+#: Sentinel: a newer official release tag exists (``release`` notify mode).
+#: There is no commit count to report — the notice tells the user to run
+#: ``hermes update`` to rebase the fork onto the new release.
+UPDATE_RELEASE_AVAILABLE = -2
+
 _UPSTREAM_REPO_URL = "https://github.com/NousResearch/hermes-agent.git"
 _OFFICIAL_REPO_CANONICAL = "github.com/nousresearch/hermes-agent"
 
@@ -254,6 +260,107 @@ def _upstream_main_sha() -> Optional[str]:
     upstream_rev = result.stdout.split()[0]
     return upstream_rev or None
 
+_CALENDAR_TAG_RE = re.compile(r"^v(\d{4})\.(\d{1,2})\.(\d{1,2})$")
+
+
+def _parse_calendar_release_tag(tag: str) -> Optional[tuple]:
+    """Parse a ``vYYYY.M.D`` calendar release tag into (year, month, day).
+
+    Returns None for anything else — pre-release suffixes (``-rc``,
+    ``-beta``), other tag shapes, junk — so only real releases notify.
+    """
+    match = _CALENDAR_TAG_RE.match((tag or "").strip())
+    if not match:
+        return None
+    return tuple(int(part) for part in match.groups())
+
+
+def _upstream_release_tags() -> list:
+    """Calendar-version release tags of the official repo, via HTTPS ls-remote.
+
+    Sorted ascending; ``[]`` on any failure (offline, timeout) — callers
+    treat that as "unknown", never as "update available".
+    """
+    try:
+        result = subprocess.run(
+            ["git", "ls-remote", "--tags", _UPSTREAM_REPO_URL],
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=10,
+        )
+    except Exception:
+        return []
+    if result.returncode != 0:
+        return []
+    tags = []
+    for line in result.stdout.splitlines():
+        if line.endswith("^{}"):  # peel marker of annotated tags
+            continue
+        ref = line.split("\t")[-1] if "\t" in line else ""
+        if not ref.startswith("refs/tags/"):
+            continue
+        parsed = _parse_calendar_release_tag(ref[len("refs/tags/"):])
+        if parsed:
+            tags.append(parsed)
+    return sorted(set(tags))
+
+
+def _check_via_upstream_commit(repo_dir: Path) -> Optional[int]:
+    """Compare HEAD against upstream main via HTTPS ls-remote (no SSH).
+
+    Shared by the official-remote path and the fork's ``commit`` notify
+    mode. Returns 0 when up-to-date — including local-ahead, where the
+    upstream tip is an ancestor of HEAD — the exact behind-count when the
+    GitHub compare API can recover it, UPDATE_AVAILABLE_NO_COUNT when
+    behind by an unknown amount, or None on failure.
+    """
+    head_rev = _git_stdout(["rev-parse", "HEAD"], cwd=repo_dir)
+    if not head_rev:
+        return None
+    upstream_rev = _upstream_main_sha()
+    if upstream_rev is None:
+        return None
+    if upstream_rev == head_rev:
+        return 0
+    ancestor = subprocess.run(
+        ["git", "merge-base", "--is-ancestor", upstream_rev, "HEAD"],
+        capture_output=True, timeout=5, cwd=str(repo_dir),
+    )
+    if ancestor.returncode == 0:
+        return 0
+    counted = _github_compare_behind(head_rev, upstream_rev)
+    return counted if counted is not None else UPDATE_AVAILABLE_NO_COUNT
+
+
+def _check_via_upstream_release() -> Optional[int]:
+    """``release`` notify mode: newer official calendar tag → update notice.
+
+    Compares the official repo's latest release tag against the local
+    RELEASE_DATE; UPDATE_RELEASE_AVAILABLE when a newer release exists, 0
+    otherwise, None when the comparison can't be made.
+    """
+    tags = _upstream_release_tags()
+    if not tags:
+        return None
+    local = _parse_calendar_release_tag(f"v{RELEASE_DATE}")
+    if local is None:
+        return None
+    return UPDATE_RELEASE_AVAILABLE if max(tags) > local else 0
+
+
+def _updates_notify_mode() -> str:
+    """Resolve ``updates.notify``: 'release' (default), 'commit', or 'off'."""
+    try:
+        from hermes_cli.config import load_config
+
+        raw = (load_config() or {}).get("updates", {}).get("notify")
+    except Exception:
+        return "release"
+    if raw is False:  # YAML 1.1 parses the bare word `off` as boolean
+        mode = "off"
+    else:
+        mode = str(raw).strip() if raw else "release"
+    return mode if mode in {"release", "commit", "off"} else "release"
+
 
 def _check_via_rev(local_rev: str) -> Optional[int]:
     """Compare an embedded git revision to upstream main via ls-remote.
@@ -279,33 +386,20 @@ def _check_via_local_git(repo_dir: Path) -> Optional[int]:
     """Count commits behind origin/main in a local checkout."""
     origin_url = _git_stdout(["remote", "get-url", "origin"], cwd=repo_dir)
     if _is_official_ssh_remote(origin_url):
-        head_rev = _git_stdout(["rev-parse", "HEAD"], cwd=repo_dir)
-        if not head_rev:
+        return _check_via_upstream_commit(repo_dir)
+
+    # GitHub fork: the interesting signal is the OFFICIAL repo, not the
+    # fork's own mirror of main (which only moves when the maintainer runs
+    # `hermes update`). Route by updates.notify. Non-GitHub remotes (local
+    # paths, other hosts) keep the original origin/main count below.
+    canonical = _canonical_github_remote(origin_url)
+    if canonical.startswith("github.com/") and canonical != _OFFICIAL_REPO_CANONICAL:
+        mode = _updates_notify_mode()
+        if mode == "off":
             return None
-        # Passive probe via HTTPS ls-remote (never SSH — no hardware-key
-        # prompts). Tip SHAs alone can't distinguish "behind" from a local
-        # carried commit sitting AHEAD of origin/main, and misreporting an
-        # ahead checkout as behind nudges the user into `hermes update`,
-        # which can wipe their carried work.
-        upstream_rev = _upstream_main_sha()
-        if upstream_rev is None:
-            return None
-        if upstream_rev == head_rev:
-            return 0
-        # Local-ahead: the remote tip is an ancestor of HEAD. Checked against
-        # the FRESH upstream SHA (not the possibly stale origin/main tracking
-        # ref) so a stale ref can't fake an up-to-date report.
-        ancestor = subprocess.run(
-            ["git", "merge-base", "--is-ancestor", upstream_rev, "HEAD"],
-            capture_output=True, timeout=5, cwd=str(repo_dir),
-        )
-        if ancestor.returncode == 0:
-            return 0
-        # Genuinely behind (or diverged). Recover the exact count via the
-        # GitHub compare API; a local-only HEAD 404s there, which safely
-        # degrades to the honest no-count sentinel — never a fabricated 1.
-        counted = _github_compare_behind(head_rev, upstream_rev)
-        return counted if counted is not None else UPDATE_AVAILABLE_NO_COUNT
+        if mode == "commit":
+            return _check_via_upstream_commit(repo_dir)
+        return _check_via_upstream_release()
 
     # Installer checkouts are shallow (`git clone --depth 1`). On a shallow
     # clone the history stops at a single commit, so a plain `git fetch` would
@@ -396,6 +490,12 @@ def check_for_updates() -> Optional[int]:
     hermes_home = get_hermes_home()
     cache_file = hermes_home / ".update_check"
     embedded_rev = os.environ.get("HERMES_REVISION") or None
+    notify_mode = _updates_notify_mode()
+    # `off` means no passive notice at all: never check, never read a stale
+    # cached result (a cached non-zero value would otherwise keep notifying
+    # after the user switched the mode off).
+    if notify_mode == "off":
+        return None
 
     # Docker images have no working tree to count commits against — the
     # published image excludes `.git` (see .dockerignore) and sets no
@@ -411,8 +511,8 @@ def check_for_updates() -> Optional[int]:
     except Exception:
         pass
 
-    # Read cache — invalidate if the embedded rev OR installed version has
-    # changed since the last check.
+    # Read cache — invalidate if the embedded rev, installed version, or
+    # notify mode has changed since the last check.
     now = time.time()
     try:
         if cache_file.exists():
@@ -421,6 +521,7 @@ def check_for_updates() -> Optional[int]:
                 now - cached.get("ts", 0) < _UPDATE_CHECK_CACHE_SECONDS
                 and cached.get("rev") == embedded_rev
                 and cached.get("ver") == VERSION
+                and cached.get("mode", "release") == notify_mode
             ):
                 return cached.get("behind")
     except Exception:
@@ -445,7 +546,8 @@ def check_for_updates() -> Optional[int]:
 
     try:
         cache_file.write_text(
-            json.dumps({"ts": now, "behind": behind, "rev": embedded_rev, "ver": VERSION}),
+            json.dumps({"ts": now, "behind": behind, "rev": embedded_rev,
+                        "ver": VERSION, "mode": notify_mode}),
             encoding="utf-8",
         )
     except Exception:
@@ -694,6 +796,11 @@ def get_update_result(timeout: float = 0.5) -> Optional[int]:
 def _format_update_notice(behind: int) -> str:
     """Render the update warning line for a non-zero ``behind`` result."""
     from hermes_cli.config import get_managed_update_command, recommended_update_command
+    if behind == UPDATE_RELEASE_AVAILABLE:
+        return (
+            "[bold yellow]⚠ new official release available[/]"
+            f"[dim yellow] — run [bold]{recommended_update_command()}[/bold] to rebase the fork[/]"
+        )
     if behind > 0:
         commits_word = "commit" if behind == 1 else "commits"
         return (

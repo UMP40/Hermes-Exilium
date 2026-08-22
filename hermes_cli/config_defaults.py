@@ -3316,6 +3316,14 @@ DEFAULT_CONFIG = {
         # branch as the deploy target and rebases it onto upstream/main.
         # `hermes update --branch <name>` overrides it for a single run.
         "branch": "main",
+        # Startup update-notice mode (GitHub-fork installs only; official
+        # installs keep the upstream-main behind count):
+        #   release (default) — only when the official repo publishes a
+        #       newer calendar release tag (vYYYY.M.D).
+        #   commit — whenever upstream main advances past this checkout.
+        #   off — no passive update notice at all (quote it: `"off"`, since
+        #       YAML 1.1 reads the bare word as boolean).
+        "notify": "release",
         # Refresh an already-installed cua-driver during `hermes update`.
         # The refresh is best-effort and macOS-only. Turn this off if the
         # upstream installer is not appropriate for the machine, for example
