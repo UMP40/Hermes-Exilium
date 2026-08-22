@@ -31,7 +31,6 @@ logger = logging.getLogger(__name__)
 # ANSI building blocks for conversation display
 # =========================================================================
 
-_GOLD = "\033[1;38;2;255;215;0m"  # True-color #FFD700 bold
 _BOLD = "\033[1m"
 _DIM = "\033[2m"
 _RST = "\033[0m"
@@ -820,11 +819,31 @@ def _format_update_notice(behind: int) -> str:
 _deferred_update_notice_started = False
 
 
-def _defer_update_notice(console: "Console", max_wait: float = 30.0) -> None:
+def _render_notice_markup(markup: str) -> str:
+    """Render rich markup to ANSI for prompt_toolkit's ANSI parser.
+
+    Rich's Console writes straight to stdout; inside prompt_toolkit's
+    patch_stdout that mangles the ESC bytes into '?[33m' garbage (#2262).
+    Render to a buffer instead so the caller can route the ANSI through
+    prompt_toolkit's own renderer.
+    """
+    from io import StringIO
+    from rich.console import Console as _RichConsole
+
+    buf = StringIO()
+    _RichConsole(
+        file=buf, force_terminal=True, color_system="truecolor", highlight=False,
+    ).print(markup)
+    return buf.getvalue().rstrip("\n")
+
+
+def _defer_update_notice(max_wait: float = 30.0) -> None:
     """Print the update warning once the prefetched check completes.
 
     Used when the banner rendered before the update prefetch finished so
     startup never blocks on git/network. Prints at most once per process.
+    The notice goes through ``cprint`` (prompt_toolkit's renderer) — Rich
+    markup written via a bare Console is mangled by patch_stdout (#2262).
     """
     global _deferred_update_notice_started
     if _deferred_update_notice_started:
@@ -838,7 +857,7 @@ def _defer_update_notice(console: "Console", max_wait: float = 30.0) -> None:
             behind = _update_result
             if behind is None or behind == 0:
                 return
-            console.print(_format_update_notice(behind))
+            cprint(_render_notice_markup(_format_update_notice(behind)))
         except Exception:
             pass  # never break the session over an update notice
 
@@ -1341,7 +1360,7 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
     try:
         behind = get_update_result(timeout=0.05)
         if behind is None and not _update_check_done.is_set():
-            _defer_update_notice(console)
+            _defer_update_notice()
         elif behind is not None and behind != 0:
             right_lines.append(_format_update_notice(behind))
     except Exception:

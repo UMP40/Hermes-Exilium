@@ -2217,11 +2217,17 @@ def print_config_warnings(config: Optional[Dict[str, Any]] = None) -> None:
     if not issues:
         return
 
-    lines = ["\033[33m⚠ Config issues detected in config.yaml:\033[0m"]
+    from hermes_cli.colors import Colors, should_use_color_stderr
+    use_color = should_use_color_stderr()
+
+    def _wrap(code: str, text: str) -> str:
+        return f"{code}{text}{Colors.RESET}" if use_color else text
+
+    lines = [_wrap(Colors.YELLOW, "⚠ Config issues detected in config.yaml:")]
     for ci in issues:
-        marker = "\033[31m✗\033[0m" if ci.severity == "error" else "\033[33m⚠\033[0m"
+        marker = _wrap(Colors.RED, "✗") if ci.severity == "error" else _wrap(Colors.YELLOW, "⚠")
         lines.append(f"  {marker} {ci.message}")
-    lines.append("  \033[2mRun 'hermes doctor' for fix suggestions.\033[0m")
+    lines.append(_wrap(Colors.DIM, "Run 'hermes doctor' for fix suggestions."))
     sys.stderr.write("\n".join(lines) + "\n\n")
 
 
@@ -2254,15 +2260,24 @@ def warn_deprecated_cwd_env_vars() -> None:
         )
     if lines:
         from hermes_constants import display_hermes_home
+        from hermes_cli.colors import Colors, should_use_color_stderr
+
+        use_color = should_use_color_stderr()
+
+        def _wrap(code: str, text: str) -> str:
+            return f"{code}{text}{Colors.RESET}" if use_color else text
 
         hint_path = display_hermes_home()
-        lines.insert(0, "\033[33m⚠ Deprecated .env settings detected:\033[0m")
+        lines.insert(0, _wrap(Colors.YELLOW, "⚠ Deprecated .env settings detected:"))
         lines.append(
-            "  \033[2mMove to config.yaml instead:  "
-            "terminal:\\n    cwd: /your/project/path\033[0m"
+            _wrap(
+                Colors.DIM,
+                "Move to config.yaml instead:  "
+                "terminal:\\n    cwd: /your/project/path",
+            )
         )
         lines.append(
-            f"  \033[2mThen remove the old entries from {hint_path}/.env\033[0m"
+            _wrap(Colors.DIM, f"Then remove the old entries from {hint_path}/.env")
         )
         sys.stderr.write("\n".join(lines) + "\n\n")
 

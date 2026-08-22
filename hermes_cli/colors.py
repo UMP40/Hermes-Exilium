@@ -19,6 +19,22 @@ def should_use_color() -> bool:
     return True
 
 
+def should_use_color_stderr() -> bool:
+    """Return True when colored stderr output is appropriate.
+
+    stderr can be redirected (gateway logs, pipes) while stdout is still a
+    terminal; raw escapes written there leak into the log. Judge the stream
+    actually being written to.
+    """
+    if os.environ.get("NO_COLOR") is not None:
+        return False
+    if os.environ.get("TERM") == "dumb":
+        return False
+    if not sys.stderr.isatty():
+        return False
+    return True
+
+
 class Colors:
     RESET = "\033[0m"
     BOLD = "\033[1m"

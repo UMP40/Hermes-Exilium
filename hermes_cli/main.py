@@ -3081,14 +3081,28 @@ def cmd_chat(args):
 
         _retired_xai_refs = find_retired_xai_refs(_load_config_for_xai_check())
         if _retired_xai_refs:
+            from hermes_cli.colors import Colors, should_use_color_stderr
+
+            use_color = should_use_color_stderr()
+
+            def _wrap(code: str, text: str) -> str:
+                return f"{code}{text}{Colors.RESET}" if use_color else text
+
             sys.stderr.write(
-                f"\033[33m⚠ xAI retires {len(_retired_xai_refs)} model(s) "
-                f"in your config on {RETIREMENT_DATE}:\033[0m\n"
+                _wrap(
+                    Colors.YELLOW,
+                    f"⚠ xAI retires {len(_retired_xai_refs)} model(s) "
+                    f"in your config on {RETIREMENT_DATE}:",
+                )
+                + "\n"
             )
             for _ref in _retired_xai_refs:
-                sys.stderr.write(f"  \033[33m⚠\033[0m {format_issue(_ref)}\n")
-            sys.stderr.write(f"  \033[2mMigration guide: {MIGRATION_GUIDE_URL}\033[0m\n")
-            sys.stderr.write("  \033[2mRun 'hermes doctor' for details.\033[0m\n\n")
+                sys.stderr.write(f"  {_wrap(Colors.YELLOW, '⚠')} {format_issue(_ref)}\n")
+            sys.stderr.write(
+                f"  {_wrap(Colors.DIM, 'Migration guide: ' + MIGRATION_GUIDE_URL)}\n"
+            )
+            _run_guide = "Run 'hermes doctor' for details."
+            sys.stderr.write(f"  {_wrap(Colors.DIM, _run_guide)}\n\n")
     except Exception:
         pass
 

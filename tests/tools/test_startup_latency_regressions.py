@@ -157,55 +157,43 @@ class TestBannerUpdateCheckNonBlocking:
         well under the old 500ms blocking wait."""
         import hermes_cli.banner as banner
 
-        class _NullConsole:
-            def print(self, *a, **k):
-                pass
-
         with patch.object(banner, "_update_check_done", threading.Event()), \
              patch.object(banner, "_deferred_update_notice_started", False):
             start = time.perf_counter()
             behind = banner.get_update_result(timeout=0.05)
             if behind is None and not banner._update_check_done.is_set():
-                banner._defer_update_notice(_NullConsole())
+                banner._defer_update_notice()
             elapsed = time.perf_counter() - start
         assert elapsed < 0.3, f"banner update check blocked {elapsed:.3f}s"
 
     def test_deferred_notice_prints_when_result_lands(self):
         import hermes_cli.banner as banner
 
-        printed = []
-
-        class _Console:
-            def print(self, msg, *a, **k):
-                printed.append(msg)
+        captured = []
 
         done = threading.Event()
         with patch.object(banner, "_update_check_done", done), \
              patch.object(banner, "_update_result", None), \
-             patch.object(banner, "_deferred_update_notice_started", False):
-            banner._defer_update_notice(_Console(), max_wait=5.0)
+             patch.object(banner, "_deferred_update_notice_started", False), \
+             patch.object(banner, "cprint", side_effect=captured.append):
+            banner._defer_update_notice(max_wait=5.0)
             banner._update_result = 3
             done.set()
             deadline = time.time() + 5
-            while not printed and time.time() < deadline:
+            while not captured and time.time() < deadline:
                 time.sleep(0.02)
-        assert printed, "deferred update notice never printed"
-        assert "3 commits behind" in printed[0]
+        assert captured, "deferred update notice never printed"
+        assert "3 commits behind" in captured[0]
 
     def test_deferred_notice_silent_when_up_to_date(self):
         import hermes_cli.banner as banner
 
-        printed = []
-
-        class _Console:
-            def print(self, msg, *a, **k):
-                printed.append(msg)
-
         done = threading.Event()
         with patch.object(banner, "_update_check_done", done), \
              patch.object(banner, "_update_result", 0), \
-             patch.object(banner, "_deferred_update_notice_started", False):
-            banner._defer_update_notice(_Console(), max_wait=2.0)
+             patch.object(banner, "_deferred_update_notice_started", False), \
+             patch.object(banner, "cprint") as _cprint:
+            banner._defer_update_notice(max_wait=2.0)
             done.set()
             time.sleep(0.3)
-        assert not printed
+        assert not _cprint.called
