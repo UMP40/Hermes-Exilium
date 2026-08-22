@@ -667,8 +667,12 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False, ch
     _map_ssl_cert_file_for_git(git_cmd)
     _check.clear_git_debris(root)
 
-    selected_channel = _source_update_channel(channel=channel, branch_explicit=branch_explicit)
-    if not branch_explicit:
+    thin_fork_check = (
+        branch == _THIN_FORK_BRANCH
+        and _is_fork(_get_origin_url(git_cmd, root))
+    )
+    if not branch_explicit and not thin_fork_check:
+        selected_channel = _source_update_channel(channel=channel)
         branch = _check.channel_compare_branch(selected_channel, git_cmd, root)
         if branch is None:
             return
@@ -677,9 +681,15 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False, ch
     # the repo (the exact cost the shallow clone avoided) and rev-list would then report a
     # huge bogus "behind" count, so fetch with --depth 1 and report presence-only.
     is_shallow = _check.is_shallow_repository(git_cmd, root)
-    fetch_result, compare_branch = _check.fetch_compare_branch(
-        git_cmd, root, branch, ["--depth", "1"] if is_shallow else [],
-    )
+    if thin_fork_check:
+        fetch_result = _check._fetch(
+            git_cmd, root, ["--depth", "1"] if is_shallow else [], "upstream", "main"
+        )
+        compare_branch = "upstream/main"
+    else:
+        fetch_result, compare_branch = _check.fetch_compare_branch(
+            git_cmd, root, branch, ["--depth", "1"] if is_shallow else [],
+        )
     if fetch_result.returncode != 0:
         _print_fetch_failure(fetch_result.stderr, git_cmd=git_cmd, root=root)
         sys.exit(1)
@@ -703,8 +713,13 @@ def _base_git_cmd() -> list[str]:
     return ["git"]
 
 
-def _is_shallow_checkout(git_cmd) -> bool:
-    return _git_run(git_cmd, ["rev-parse", "--is-shallow-repository"]).stdout.strip() == "true"
+def _is_shallow_checkout(git_cmd, cwd=None) -> bool:
+    return (
+        _git_run(
+            git_cmd, ["rev-parse", "--is-shallow-repository"], cwd
+        ).stdout.strip()
+        == "true"
+    )
 
 
 def _tip_shas(git_cmd, target_ref: str, base: str = "HEAD") -> tuple[str, str]:
@@ -725,23 +740,276 @@ def _print_update_check_result(behind: int | None, compare_branch: str) -> None:
     print(f"  Run '{recommended_update_command()}' to install.")
 
 
-def _source_completion_request(opts, plan, snapshot_id, windows_resume, desktop, gateway_mode) -> dict:
-    """Freeze data before mutation; no pre-swap module objects cross the seam."""
-    from copy import deepcopy
-    current = _completion_receipt._current.get()
-    if current is None:
-        _completion_receipt.begin_update_receipt()
-        current = _completion_receipt._current.get()
-    return {
-        "schema": 1, "source": str(_m().PROJECT_ROOT.resolve()),
-        "home": str(get_hermes_home()), "branch": "main", "desktop": desktop,
-        "assume_yes": opts.assume_yes, "gateway_mode": gateway_mode,
-        "no_gateway_restart": getattr(opts, "no_gateway_restart", False),
-        "pre_update_version": opts.pre_update_version, "snapshot_id": snapshot_id,
-        "sibling_snapshots": deepcopy(_completion_config._LAST_SIBLING_SNAPSHOTS),
-        "plan": plan.to_dict() if plan is not None else None,
-        "receipt": deepcopy(current.data), "windows_resume": windows_resume,
-    }
+#: Deploy branch of a thin fork. ``main`` stays a pure mirror of upstream;
+#: fixes live on this branch and are rebased onto the mirror on every update.
+_THIN_FORK_BRANCH = "custom"
+
+
+def _thin_fork_rebase_base(git_cmd, cwd) -> str | None:
+    """Find the previous upstream tip that ``custom`` was based on.
+
+    Installer checkouts are shallow. After ``main`` advances to a separately
+    fetched depth-1 upstream tip, a plain ``git rebase main`` sees unrelated
+    roots and tries to replay the old upstream snapshot as a fork commit.
+    Prefer the current mirror, then its reflog, and deepen only the small
+    ``origin/custom`` side when a fresh depth-1 clone hides the base.
+    """
+
+    def candidates() -> list[str]:
+        found: list[str] = []
+        for command in (
+            ["rev-parse", "--verify", "main"],
+            ["rev-parse", "--verify", "origin/main"],
+            ["reflog", "show", "--format=%H", "-20", "main"],
+        ):
+            result = _git_run(git_cmd, command, cwd)
+            if result.returncode == 0:
+                for sha in result.stdout.splitlines():
+                    sha = sha.strip()
+                    if sha and sha not in found:
+                        found.append(sha)
+        return found
+
+    def first_ancestor() -> str | None:
+        for sha in candidates():
+            if _git_run(
+                git_cmd,
+                ["merge-base", "--is-ancestor", sha, _THIN_FORK_BRANCH],
+                cwd,
+            ).returncode == 0:
+                return sha
+        return None
+
+    base = first_ancestor()
+    if base:
+        return base
+
+    # A single-branch custom clone has neither local main nor origin/main.
+    _git_run(
+        git_cmd,
+        ["fetch", "origin", "+refs/heads/main:refs/remotes/origin/main"],
+        cwd,
+        network=True,
+    )
+    base = first_ancestor()
+    if base:
+        return base
+
+    if not _is_shallow_checkout(git_cmd, cwd):
+        return None
+
+    # Deepen the thin fork, not the enormous upstream repository. Once the
+    # previous mirrored main tip becomes visible, rebase --onto needs no older
+    # history. The cumulative cap keeps a malformed non-thin fork bounded.
+    for deepen_by in (32, 128, 512, 2048):
+        deepen = _git_run(
+            git_cmd,
+            ["fetch", f"--deepen={deepen_by}", "origin", _THIN_FORK_BRANCH],
+            cwd,
+            network=True,
+        )
+        if deepen.returncode != 0:
+            break
+        base = first_ancestor()
+        if base:
+            return base
+    return None
+
+
+def _thin_fork_sync_main_mirror(git_cmd, cwd) -> bool:
+    """Reset local ``main`` to ``upstream/main`` and mirror it to the fork."""
+    current = _git_run(
+        git_cmd, ["rev-parse", "--abbrev-ref", "HEAD"], cwd
+    ).stdout.strip()
+    main_reset = _git_run(
+        git_cmd, ["checkout", "-B", "main", "upstream/main"], cwd
+    )
+    if main_reset.returncode != 0:
+        print("  ✗ Could not reset main to upstream/main.")
+        if main_reset.stderr.strip():
+            print(f"    {main_reset.stderr.strip().splitlines()[0]}")
+        if current and current != "HEAD":
+            _git_run(git_cmd, ["checkout", current], cwd)
+        return False
+
+    _git_run(
+        git_cmd,
+        ["fetch", "origin", "+refs/heads/main:refs/remotes/origin/main"],
+        cwd,
+        network=True,
+    )
+    push = _git_run(
+        git_cmd,
+        [
+            "push",
+            "origin",
+            "main",
+            "--force-with-lease=main:refs/remotes/origin/main",
+        ],
+        cwd,
+        network=True,
+    )
+    if push.returncode != 0:
+        print("  ℹ Local main synced to upstream, but could not push to fork")
+        if push.stderr.strip():
+            print(f"    {push.stderr.strip().splitlines()[0]}")
+    else:
+        print("  ✓ Fork main synced with upstream")
+    if current and current != "HEAD":
+        _git_run(git_cmd, ["checkout", current], cwd)
+    return True
+
+
+def _discover_thin_fork_test_files(git_cmd, cwd) -> list[str]:
+    """Return Python tests introduced by fork-only commits."""
+    try:
+        result = _git_run(
+            git_cmd,
+            [
+                "log",
+                "--format=",
+                "--name-only",
+                "--diff-filter=A",
+                "main..custom",
+                "--",
+                "tests",
+            ],
+            cwd,
+            check=True,
+        )
+    except subprocess.CalledProcessError:
+        return []
+    return sorted(
+        {
+            line.strip()
+            for line in result.stdout.splitlines()
+            if line.strip().endswith(".py") and (cwd / line.strip()).is_file()
+        }
+    )
+
+
+def _run_thin_fork_regression_tests(git_cmd, cwd, test_runner=None) -> bool:
+    """Run fork-added tests before publishing a rebased deploy branch."""
+    files = _discover_thin_fork_test_files(git_cmd, cwd)
+    if not files:
+        print(
+            "  ℹ No fork-added test files under tests/ — regression gate "
+            "skipped (add tests with each fix)"
+        )
+        return True
+    runner = test_runner or [str(cwd / "scripts" / "run_tests.sh")]
+    print(f"  → Running fork regression tests ({len(files)} file(s))...")
+    result = subprocess.run(
+        runner + files,
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    if result.returncode != 0:
+        print("  ✗ Fork regression tests FAILED:")
+        for line in result.stdout.splitlines()[-15:] if result.stdout else ():
+            print(f"    {line}")
+        return False
+    print("  ✓ Fork regression tests passed")
+    return True
+
+
+def _thin_fork_update_workflow(git_cmd, cwd, test_runner=None) -> bool:
+    """Mirror main, rebase custom, gate on fork tests, then publish custom."""
+    rebase_base = _thin_fork_rebase_base(git_cmd, cwd)
+    if not rebase_base:
+        print("  ✗ Could not identify the previous upstream base of 'custom'.")
+        print("    Refusing to rebase a disconnected shallow history.")
+        return False
+    if not _thin_fork_sync_main_mirror(git_cmd, cwd):
+        return False
+    checkout = _git_run(git_cmd, ["checkout", _THIN_FORK_BRANCH], cwd)
+    if checkout.returncode != 0:
+        print(f"  ✗ Could not switch to '{_THIN_FORK_BRANCH}':")
+        if checkout.stderr.strip():
+            print(f"    {checkout.stderr.strip().splitlines()[0]}")
+        return False
+    rebase = _git_run(
+        git_cmd,
+        ["rebase", "--onto", "main", rebase_base, _THIN_FORK_BRANCH],
+        cwd,
+    )
+    if rebase.returncode != 0:
+        _git_run(git_cmd, ["rebase", "--abort"], cwd)
+        print(f"  ✗ Rebase of '{_THIN_FORK_BRANCH}' onto main failed (conflict?).")
+        print(f"    Rebase aborted; '{_THIN_FORK_BRANCH}' is unchanged.")
+        print(
+            f"    Resolve manually: cd {cwd} && "
+            f"git rebase --onto main {rebase_base} {_THIN_FORK_BRANCH}"
+        )
+        return False
+    if not _run_thin_fork_regression_tests(
+        git_cmd, cwd, test_runner=test_runner
+    ):
+        return False
+    push = _git_run(
+        git_cmd,
+        ["push", "origin", _THIN_FORK_BRANCH, "--force-with-lease"],
+        cwd,
+        network=True,
+    )
+    if push.returncode != 0:
+        print("  ℹ Local custom rebased, but could not push to fork")
+        if push.stderr.strip():
+            print(f"    {push.stderr.strip().splitlines()[0]}")
+    else:
+        print(f"  ✓ Fork '{_THIN_FORK_BRANCH}' synced with upstream")
+    return True
+
+
+def _repair_venv_on_current_checkout(
+    *, assume_yes, gateway_mode, pre_update_snapshot_id,
+    had_desktop_app_before_update, active_lazy_features, active_tool_dependencies,
+    _windows_gateway_resume) -> bool:
+    """Reinstall ``.[all]`` + lazy/tool deps into an unhealthy (or handed-off) venv; returns
+    whether the checkout can be reported complete."""
+    # Self-lock deferral: the repair rewrites the venv too (same mapped-extension hazard).
+    # See #86735.
+    # Self-lock deferral (relocated preflight — #86735): if THIS process holds a native extension the sync
+    # must rewrite, defer NOW — after the code swap, so only the dependency install is pending and the next
+    # fresh launch completes it via the marker.
+    _m()._abort_dependency_sync_if_self_locked(_windows_gateway_resume)
+    _write_update_incomplete_marker()
+    from hermes_cli.managed_uv import ensure_uv
+    repair_uv = ensure_uv()
+    # Venv gone entirely (repair interrupted after the old one was moved aside): recreate.
+    venv_python_missing = not (
+        venv_python_path(_m().PROJECT_ROOT / "venv", windows=_m()._is_windows())).exists()
+    if venv_python_missing and repair_uv:
+        print("→ Recreating virtual environment...")
+        subprocess.run([repair_uv, "venv", "venv"], cwd=_m().PROJECT_ROOT, check=False)
+    repair_prefix, repair_env = _pip_install_prefix(repair_uv)
+    _m()._install_python_dependencies_with_optional_fallback(repair_prefix, env=repair_env, group="all")
+    _m()._refresh_active_lazy_features(repair_prefix, env=repair_env, features=active_lazy_features)
+    _m()._restore_active_tool_dependencies(active_tool_dependencies, repair_prefix, env=repair_env)
+    # Core ``.[all]`` install finished. Clear the generic core breadcrumb before the lazy-refresh phase —
+    # that phase uses its own marker so a later lazy failure cannot be "healed" by clearing the core marker
+    # based on a narrow 7-package import probe (#58004 review).
+    _m()._clear_update_incomplete_marker()
+    healthy_after, detail_after = _venv_core_imports_healthy()
+    if not healthy_after:
+        print(f"⚠ Venv still unhealthy after repair: {detail_after}")
+        print("  Close all Hermes windows/gateways and re-run: hermes update")
+        return False
+    print("✓ Dependencies repaired!")
+    # The hand-off child never reaches the commits-pulled Node/web/Desktop
+    # phase. Finish through the current-checkout repair path, whose npm digest
+    # gate keeps this cheap when the pulled manifests did not change.
+    return _repair_node_deps_on_current_checkout(
+        _print_verified_update_completion,
+        assume_yes=assume_yes,
+        gateway_mode=gateway_mode,
+        pre_update_snapshot_id=pre_update_snapshot_id,
+        completion_message="✓ Update complete!",
+        had_desktop_app_before_update=had_desktop_app_before_update,
+    )
 
 
 def _settle_windows_resume(request: dict) -> None:
@@ -1371,7 +1639,7 @@ def _apply_parked_branch_guard(
     with _best_effort('Could not read updates.parked_branch_strategy: %s'):
         _in_place_configured = (
             _updates_config().get("parked_branch_strategy", "switch") == "update_in_place")
-    if not _in_place_configured or switch_branch:
+    if not _in_place_configured or switch_branch or thin_fork_mode:
         _m()._print_parked_branch_kept_notice(
             current_branch, branch, switch_block_reason.split(":", 1)[1])
         return True, False, switch_block_reason
@@ -1388,13 +1656,13 @@ def _apply_parked_branch_guard(
 
 def _prepare_checkout_for_update(
     git_cmd, branch, current_branch, *, is_fork, assume_yes, gateway_mode, gw_input_fn,
-    switch_branch, target_ref=None, _windows_gateway_resume):
+    switch_branch, target_ref=None, _windows_gateway_resume=None, thin_fork_mode=False):
     """Parked-branch guard, land on the target, stash, count new commits. Exits when the
     checkout is unsafe to move or the target is missing. ``commit_count`` is 0 when up to
     date, -1 when tips differ but the shallow count is unrecoverable."""
     if target_ref is None:
         target_ref = f"origin/{branch}"
-    release_tag = target_ref != f"origin/{branch}"
+    release_tag = not thin_fork_mode and target_ref != f"origin/{branch}"
     if release_tag:
         # A release lands detached at its exact commit, never merges into or
         # rewrites the user's branch. Branch-policy machinery is main-only.
@@ -1402,7 +1670,7 @@ def _prepare_checkout_for_update(
     else:
         parked_branch_switched, in_place_update, switch_block_reason = _apply_parked_branch_guard(
             git_cmd, branch, current_branch, switch_branch=switch_branch,
-            _windows_gateway_resume=_windows_gateway_resume)
+            thin_fork_mode=thin_fork_mode, _windows_gateway_resume=_windows_gateway_resume)
 
     if not release_tag and not in_place_update and current_branch == "HEAD" != branch:
         print(f"  ⚠ Currently on detached HEAD — switching to {branch} for update...")
@@ -1944,7 +2212,8 @@ def _cmd_update_impl(args, gateway_mode: bool):
         _plan = _prepare_checkout_for_update(
             git_cmd, branch, current_branch, is_fork=is_fork, assume_yes=assume_yes,
             gateway_mode=gateway_mode, gw_input_fn=gw_input_fn, switch_branch=opts.switch_branch,
-            target_ref=target_ref, _windows_gateway_resume=_windows_gateway_resume)
+            target_ref=target_ref, thin_fork_mode=thin_fork_mode,
+            _windows_gateway_resume=_windows_gateway_resume)
         commit_count = _plan.commit_count
 
         if commit_count == 0:
