@@ -345,6 +345,7 @@ def _print_called_process_error_tail(exc: subprocess.CalledProcessError, *, limi
         print(f"    {line}")
 
 
+
 def _invalidate_update_cache():
     """Delete the update-check cache for ALL profiles: the repo is shared, so one profile's
     update makes every profile current and a stale "commits behind" banner would linger."""
@@ -515,16 +516,30 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
     is_shallow = _is_shallow_checkout(git_cmd)
     depth_args = ["--depth", "1"] if is_shallow else []
 
-    # Probe locally for an 'upstream' remote before a network fetch non-forks always fail.
+    thin_fork_check = (
+        branch == _THIN_FORK_BRANCH
+        and _is_fork(_get_origin_url(git_cmd, _m().PROJECT_ROOT))
+    )
     fetch_result = None
-    if branch == "main" and _git_run(git_cmd, ["remote", "get-url", "upstream"]).returncode == 0:
+    if thin_fork_check:
         print("→ Fetching from upstream...")
-        fetch_result = _git_run(git_cmd, ["fetch"] + depth_args + ["upstream", branch], network=True)
-    if fetch_result is not None and fetch_result.returncode == 0:
+        fetch_result = _git_run(
+            git_cmd, ["fetch"] + depth_args + ["upstream", "main"], network=True
+        )
+        compare_branch = "upstream/main"
+    elif branch == "main" and _git_run(
+        git_cmd, ["remote", "get-url", "upstream"]
+    ).returncode == 0:
+        print("→ Fetching from upstream...")
+        fetch_result = _git_run(
+            git_cmd, ["fetch"] + depth_args + ["upstream", branch], network=True
+        )
         compare_branch = f"upstream/{branch}"
-    else:
+    if fetch_result is None or fetch_result.returncode != 0:
         print("→ Fetching from origin...")
-        fetch_result = _git_run(git_cmd, ["fetch"] + depth_args + ["origin", branch], network=True)
+        fetch_result = _git_run(
+            git_cmd, ["fetch"] + depth_args + ["origin", branch], network=True
+        )
         compare_branch = f"origin/{branch}"
 
     if fetch_result.returncode != 0:
@@ -558,10 +573,14 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
             return
         from hermes_cli.banner import _github_compare_behind
         # counted == 0 means local-ahead, not behind; None means the API could not count.
-        _print_update_check_result(_github_compare_behind(head_sha, target_sha), compare_branch)
+        _print_update_check_result(
+            _github_compare_behind(head_sha, target_sha), compare_branch
+        )
         return
 
-    rev_result = _git_run(git_cmd, ["rev-list", f"HEAD..{compare_branch}", "--count"], check=True)
+    rev_result = _git_run(
+        git_cmd, ["rev-list", f"HEAD..{compare_branch}", "--count"], check=True
+    )
     _print_update_check_result(int(rev_result.stdout.strip()), compare_branch)
 
 
@@ -573,8 +592,13 @@ def _base_git_cmd() -> list[str]:
     return ["git"]
 
 
-def _is_shallow_checkout(git_cmd) -> bool:
-    return _git_run(git_cmd, ["rev-parse", "--is-shallow-repository"]).stdout.strip() == "true"
+def _is_shallow_checkout(git_cmd, cwd=None) -> bool:
+    return (
+        _git_run(
+            git_cmd, ["rev-parse", "--is-shallow-repository"], cwd
+        ).stdout.strip()
+        == "true"
+    )
 
 
 def _tip_shas(git_cmd, target_ref: str) -> tuple[str, str]:
@@ -593,6 +617,230 @@ def _print_update_check_result(behind: int | None, compare_branch: str) -> None:
         print(f"☤ Update available (behind {compare_branch}).")
     from hermes_cli.config import recommended_update_command
     print(f"  Run '{recommended_update_command()}' to install.")
+
+
+#: Deploy branch of a thin fork. ``main`` stays a pure mirror of upstream;
+#: fixes live on this branch and are rebased onto the mirror on every update.
+_THIN_FORK_BRANCH = "custom"
+
+
+def _thin_fork_rebase_base(git_cmd, cwd) -> str | None:
+    """Find the previous upstream tip that ``custom`` was based on.
+
+    Installer checkouts are shallow. After ``main`` advances to a separately
+    fetched depth-1 upstream tip, a plain ``git rebase main`` sees unrelated
+    roots and tries to replay the old upstream snapshot as a fork commit.
+    Prefer the current mirror, then its reflog, and deepen only the small
+    ``origin/custom`` side when a fresh depth-1 clone hides the base.
+    """
+
+    def candidates() -> list[str]:
+        found: list[str] = []
+        for command in (
+            ["rev-parse", "--verify", "main"],
+            ["rev-parse", "--verify", "origin/main"],
+            ["reflog", "show", "--format=%H", "-20", "main"],
+        ):
+            result = _git_run(git_cmd, command, cwd)
+            if result.returncode == 0:
+                for sha in result.stdout.splitlines():
+                    sha = sha.strip()
+                    if sha and sha not in found:
+                        found.append(sha)
+        return found
+
+    def first_ancestor() -> str | None:
+        for sha in candidates():
+            if _git_run(
+                git_cmd,
+                ["merge-base", "--is-ancestor", sha, _THIN_FORK_BRANCH],
+                cwd,
+            ).returncode == 0:
+                return sha
+        return None
+
+    base = first_ancestor()
+    if base:
+        return base
+
+    # A single-branch custom clone has neither local main nor origin/main.
+    _git_run(
+        git_cmd,
+        ["fetch", "origin", "+refs/heads/main:refs/remotes/origin/main"],
+        cwd,
+        network=True,
+    )
+    base = first_ancestor()
+    if base:
+        return base
+
+    if not _is_shallow_checkout(git_cmd, cwd):
+        return None
+
+    # Deepen the thin fork, not the enormous upstream repository. Once the
+    # previous mirrored main tip becomes visible, rebase --onto needs no older
+    # history. The cumulative cap keeps a malformed non-thin fork bounded.
+    for deepen_by in (32, 128, 512, 2048):
+        deepen = _git_run(
+            git_cmd,
+            ["fetch", f"--deepen={deepen_by}", "origin", _THIN_FORK_BRANCH],
+            cwd,
+            network=True,
+        )
+        if deepen.returncode != 0:
+            break
+        base = first_ancestor()
+        if base:
+            return base
+    return None
+
+
+def _thin_fork_sync_main_mirror(git_cmd, cwd) -> bool:
+    """Reset local ``main`` to ``upstream/main`` and mirror it to the fork."""
+    current = _git_run(
+        git_cmd, ["rev-parse", "--abbrev-ref", "HEAD"], cwd
+    ).stdout.strip()
+    main_reset = _git_run(
+        git_cmd, ["checkout", "-B", "main", "upstream/main"], cwd
+    )
+    if main_reset.returncode != 0:
+        print("  ✗ Could not reset main to upstream/main.")
+        if main_reset.stderr.strip():
+            print(f"    {main_reset.stderr.strip().splitlines()[0]}")
+        if current and current != "HEAD":
+            _git_run(git_cmd, ["checkout", current], cwd)
+        return False
+
+    _git_run(
+        git_cmd,
+        ["fetch", "origin", "+refs/heads/main:refs/remotes/origin/main"],
+        cwd,
+        network=True,
+    )
+    push = _git_run(
+        git_cmd,
+        [
+            "push",
+            "origin",
+            "main",
+            "--force-with-lease=main:refs/remotes/origin/main",
+        ],
+        cwd,
+        network=True,
+    )
+    if push.returncode != 0:
+        print("  ℹ Local main synced to upstream, but could not push to fork")
+        if push.stderr.strip():
+            print(f"    {push.stderr.strip().splitlines()[0]}")
+    else:
+        print("  ✓ Fork main synced with upstream")
+    if current and current != "HEAD":
+        _git_run(git_cmd, ["checkout", current], cwd)
+    return True
+
+
+def _discover_thin_fork_test_files(git_cmd, cwd) -> list[str]:
+    """Return Python tests introduced by fork-only commits."""
+    try:
+        result = _git_run(
+            git_cmd,
+            [
+                "log",
+                "--format=",
+                "--name-only",
+                "--diff-filter=A",
+                "main..custom",
+                "--",
+                "tests",
+            ],
+            cwd,
+            check=True,
+        )
+    except subprocess.CalledProcessError:
+        return []
+    return sorted(
+        {
+            line.strip()
+            for line in result.stdout.splitlines()
+            if line.strip().endswith(".py") and (cwd / line.strip()).is_file()
+        }
+    )
+
+
+def _run_thin_fork_regression_tests(git_cmd, cwd, test_runner=None) -> bool:
+    """Run fork-added tests before publishing a rebased deploy branch."""
+    files = _discover_thin_fork_test_files(git_cmd, cwd)
+    if not files:
+        print(
+            "  ℹ No fork-added test files under tests/ — regression gate "
+            "skipped (add tests with each fix)"
+        )
+        return True
+    runner = test_runner or [str(cwd / "scripts" / "run_tests.sh")]
+    print(f"  → Running fork regression tests ({len(files)} file(s))...")
+    result = subprocess.run(
+        runner + files,
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    if result.returncode != 0:
+        print("  ✗ Fork regression tests FAILED:")
+        for line in result.stdout.splitlines()[-15:] if result.stdout else ():
+            print(f"    {line}")
+        return False
+    print("  ✓ Fork regression tests passed")
+    return True
+
+
+def _thin_fork_update_workflow(git_cmd, cwd, test_runner=None) -> bool:
+    """Mirror main, rebase custom, gate on fork tests, then publish custom."""
+    rebase_base = _thin_fork_rebase_base(git_cmd, cwd)
+    if not rebase_base:
+        print("  ✗ Could not identify the previous upstream base of 'custom'.")
+        print("    Refusing to rebase a disconnected shallow history.")
+        return False
+    if not _thin_fork_sync_main_mirror(git_cmd, cwd):
+        return False
+    checkout = _git_run(git_cmd, ["checkout", _THIN_FORK_BRANCH], cwd)
+    if checkout.returncode != 0:
+        print(f"  ✗ Could not switch to '{_THIN_FORK_BRANCH}':")
+        if checkout.stderr.strip():
+            print(f"    {checkout.stderr.strip().splitlines()[0]}")
+        return False
+    rebase = _git_run(
+        git_cmd,
+        ["rebase", "--onto", "main", rebase_base, _THIN_FORK_BRANCH],
+        cwd,
+    )
+    if rebase.returncode != 0:
+        _git_run(git_cmd, ["rebase", "--abort"], cwd)
+        print(f"  ✗ Rebase of '{_THIN_FORK_BRANCH}' onto main failed (conflict?).")
+        print(f"    Rebase aborted; '{_THIN_FORK_BRANCH}' is unchanged.")
+        print(
+            f"    Resolve manually: cd {cwd} && "
+            f"git rebase --onto main {rebase_base} {_THIN_FORK_BRANCH}"
+        )
+        return False
+    if not _run_thin_fork_regression_tests(
+        git_cmd, cwd, test_runner=test_runner
+    ):
+        return False
+    push = _git_run(
+        git_cmd,
+        ["push", "origin", _THIN_FORK_BRANCH, "--force-with-lease"],
+        cwd,
+        network=True,
+    )
+    if push.returncode != 0:
+        print("  ℹ Local custom rebased, but could not push to fork")
+        if push.stderr.strip():
+            print(f"    {push.stderr.strip().splitlines()[0]}")
+    else:
+        print(f"  ✓ Fork '{_THIN_FORK_BRANCH}' synced with upstream")
+    return True
 
 
 def _repair_venv_on_current_checkout(
@@ -792,11 +1040,17 @@ def _rollback_if_pulled_syntax_error(git_cmd, pre_pull_sha) -> None:
 
 
 def _pull_updates(
-    git_cmd, branch, auto_stash_ref, *, prompt_for_restore, gw_input_fn, discard_local_changes,
-    keep_stash):
-    """Fast-forward onto ``origin/<branch>`` and settle the autostash. Divergence by shape:
-    custom branch -> merge, same branch -> reset, orphan history -> rescue ref first; a
-    post-pull syntax error in a critical file rolls back. Exits on failure; returns pre-pull SHA."""
+    git_cmd,
+    branch,
+    auto_stash_ref,
+    *,
+    prompt_for_restore,
+    gw_input_fn,
+    discard_local_changes,
+    keep_stash,
+    thin_fork_mode=False,
+):
+    """Apply the fetched update and settle the autostash."""
     update_succeeded = False
     # Pre-pull SHA for auto-rollback (stray conflict markers once bricked every updater).
     # Capture the pre-pull SHA so we can auto-roll-back if the new code has a syntax error in a
@@ -804,10 +1058,21 @@ def _pull_updates(
     # every user who ran ``hermes update`` for the 7 minutes between the bad commit and the fix landing).
     pre_pull_sha = _capture_head_sha(git_cmd, _m().PROJECT_ROOT)
     try:
-        # merge --ff-only the already-fetched ref instead of `git pull`, which would do a
-        # SECOND network fetch; identical in effect given the fresh tracking ref.
-        if _git_run(git_cmd, ["merge", "--ff-only", f"origin/{branch}"]).returncode != 0:
-            _reconcile_diverged_checkout(git_cmd, branch, pre_pull_sha)
+        if thin_fork_mode:
+            if not _thin_fork_update_workflow(git_cmd, _m().PROJECT_ROOT):
+                print()
+                print(
+                    "  ✗ Thin-fork update failed (rebase conflict or "
+                    "regression tests) — custom was not pushed."
+                )
+                sys.exit(1)
+        else:
+            # merge --ff-only the already-fetched ref instead of `git pull`,
+            # which would perform a second network fetch.
+            if _git_run(
+                git_cmd, ["merge", "--ff-only", f"origin/{branch}"]
+            ).returncode != 0:
+                _reconcile_diverged_checkout(git_cmd, branch, pre_pull_sha)
         _rollback_if_pulled_syntax_error(git_cmd, pre_pull_sha)
         update_succeeded = True
     finally:
@@ -843,7 +1108,13 @@ class _CheckoutPlan:
 
 
 def _apply_parked_branch_guard(
-    git_cmd, branch, current_branch, *, switch_branch, _windows_gateway_resume
+    git_cmd,
+    branch,
+    current_branch,
+    *,
+    switch_branch,
+    thin_fork_mode,
+    _windows_gateway_resume,
 ) -> tuple[bool, bool, "str | None"]:
     """Decide how a checkout parked on another branch is brought to *branch* (stash-switch-pull-
     switch-back used to "update" main while the running code stayed behind).
@@ -872,7 +1143,7 @@ def _apply_parked_branch_guard(
     with _best_effort('Could not read updates.parked_branch_strategy: %s'):
         _in_place_configured = (
             _updates_config().get("parked_branch_strategy", "switch") == "update_in_place")
-    if not _in_place_configured or switch_branch:
+    if not _in_place_configured or switch_branch or thin_fork_mode:
         _m()._print_parked_branch_kept_notice(
             current_branch, branch, switch_block_reason.split(":", 1)[1])
         return True, False, switch_block_reason
@@ -887,14 +1158,31 @@ def _apply_parked_branch_guard(
 
 
 def _prepare_checkout_for_update(
-    git_cmd, branch, current_branch, *, is_fork, assume_yes, gateway_mode, gw_input_fn,
-    switch_branch, _windows_gateway_resume):
+    git_cmd,
+    branch,
+    current_branch,
+    *,
+    is_fork,
+    thin_fork_mode,
+    assume_yes,
+    gateway_mode,
+    gw_input_fn,
+    switch_branch,
+    _windows_gateway_resume,
+):
     """Parked-branch guard, land on the target, stash, count new commits. Exits when the
     checkout is unsafe to move or the target is missing. ``commit_count`` is 0 when up to
     date, -1 when tips differ but the shallow count is unrecoverable."""
-    parked_branch_switched, in_place_update, switch_block_reason = _apply_parked_branch_guard(
-        git_cmd, branch, current_branch, switch_branch=switch_branch,
-        _windows_gateway_resume=_windows_gateway_resume)
+    parked_branch_switched, in_place_update, switch_block_reason = (
+        _apply_parked_branch_guard(
+            git_cmd,
+            branch,
+            current_branch,
+            switch_branch=switch_branch,
+            thin_fork_mode=thin_fork_mode,
+            _windows_gateway_resume=_windows_gateway_resume,
+        )
+    )
 
     if not in_place_update and current_branch == "HEAD" != branch:
         print(f"  ⚠ Currently on detached HEAD — switching to {branch} for update...")
@@ -918,17 +1206,18 @@ def _prepare_checkout_for_update(
         and not assume_yes
         and (gateway_mode or (sys.stdin.isatty() and sys.stdout.isatty())))
 
-    # On shallow checkouts `rev-list --count` can report the entire remote ancestry. The
-    # zero/nonzero gate is still sound; treat the shallow NUMBER as unknown and recover it
-    # via the GitHub compare API when possible.
-    result = _git_run(git_cmd, ["rev-list", f"HEAD..origin/{branch}", "--count"], check=True)
+    # On shallow checkouts ``rev-list --count`` can report the truncated
+    # ancestry. The target must match the update mode: a thin fork derives
+    # custom from upstream/main, not from unchanged origin/custom.
+    count_ref = "upstream/main" if thin_fork_mode else f"origin/{branch}"
+    result = _git_run(
+        git_cmd, ["rev-list", f"HEAD..{count_ref}", "--count"], check=True
+    )
     commit_count = int(result.stdout.strip())
-
-    apply_is_shallow = _is_shallow_checkout(git_cmd)
-    if commit_count > 0 and apply_is_shallow:
+    if commit_count > 0 and _is_shallow_checkout(git_cmd):
         from hermes_cli.banner import _github_compare_behind
-        counted = _github_compare_behind(*_tip_shas(git_cmd, f"origin/{branch}"))
-        # counted == 0 means local-ahead: falls through to the up-to-date path.
+
+        counted = _github_compare_behind(*_tip_shas(git_cmd, count_ref))
         commit_count = counted if counted is not None else -1
 
     # A fork can match origin yet trail upstream, so the sync can move HEAD with
@@ -951,6 +1240,8 @@ def _prepare_checkout_for_update(
                 git_cmd, _m().PROJECT_ROOT, pre_sync_sha, post_sync_sha)
             # HEAD moving is proof of an update even if the count can't be read.
             commit_count = max(1, synced_count)
+    elif commit_count == 0 and thin_fork_mode:
+        _thin_fork_sync_main_mirror(git_cmd, _m().PROJECT_ROOT)
 
     return _CheckoutPlan(
         auto_stash_ref=auto_stash_ref, commit_count=commit_count, in_place_update=in_place_update,
@@ -1334,6 +1625,10 @@ def _cmd_update_impl(args, gateway_mode: bool):
     try:
         # Scoped fetch: a bare `git fetch origin` pulls thousands of branches and can stall.
         branch = _m()._resolve_update_branch(args)
+        # Thin-fork mode: origin is a fork and the deploy branch is the
+        # fork's custom branch. main is then a pure mirror of upstream and
+        # the code swap is mirror + rebase instead of merge.
+        thin_fork_mode = is_fork and branch == _THIN_FORK_BRANCH
 
         # Self-heal abandoned .git/*.lock files (crashed fetch) or the fetch fails "File exists".
         from hermes_cli.gitlock import clear_stale_git_locks, clear_stale_tmp_packs
@@ -1358,17 +1653,39 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # runs and failed restores preserve the stash but nothing ever mentioned it again.
         _m()._warn_orphaned_update_autostashes(git_cmd, _m().PROJECT_ROOT)
 
-        print("→ Fetching updates...")
-        fetch_result = _git_run(git_cmd, ["fetch", "origin", branch], network=True)
+        if thin_fork_mode:
+            if not _has_upstream_remote(git_cmd, _m().PROJECT_ROOT):
+                print(
+                    f"✗ Thin-fork deploy branch '{_THIN_FORK_BRANCH}' requires "
+                    "an 'upstream' remote pointing at the official repo."
+                )
+                sys.exit(1)
+            print("→ Fetching upstream...")
+            fetch_result = _git_run(
+                git_cmd, ["fetch", "upstream", "main"], network=True
+            )
+        else:
+            print("→ Fetching updates...")
+            fetch_result = _git_run(
+                git_cmd, ["fetch", "origin", branch], network=True
+            )
         if fetch_result.returncode != 0:
             _print_fetch_failure(fetch_result.stderr)
             sys.exit(1)
 
         current_branch = _current_branch_name(git_cmd, check=True)
         _plan = _prepare_checkout_for_update(
-            git_cmd, branch, current_branch, is_fork=is_fork, assume_yes=assume_yes,
-            gateway_mode=gateway_mode, gw_input_fn=gw_input_fn, switch_branch=opts.switch_branch,
-            _windows_gateway_resume=_windows_gateway_resume)
+            git_cmd,
+            branch,
+            current_branch,
+            is_fork=is_fork,
+            thin_fork_mode=thin_fork_mode,
+            assume_yes=assume_yes,
+            gateway_mode=gateway_mode,
+            gw_input_fn=gw_input_fn,
+            switch_branch=opts.switch_branch,
+            _windows_gateway_resume=_windows_gateway_resume,
+        )
         commit_count = _plan.commit_count
 
         if commit_count == 0:
@@ -1390,9 +1707,15 @@ def _cmd_update_impl(args, gateway_mode: bool):
 
         print("→ Pulling updates...")
         pre_pull_sha = _pull_updates(
-            git_cmd, branch, _plan.auto_stash_ref, prompt_for_restore=_plan.prompt_for_restore,
-            gw_input_fn=gw_input_fn, discard_local_changes=opts.discard_local_changes,
-            keep_stash=opts.keep_stash)
+            git_cmd,
+            branch,
+            _plan.auto_stash_ref,
+            prompt_for_restore=_plan.prompt_for_restore,
+            gw_input_fn=gw_input_fn,
+            discard_local_changes=opts.discard_local_changes,
+            keep_stash=opts.keep_stash,
+            thin_fork_mode=thin_fork_mode,
+        )
         _apply_pulled_update(
             git_cmd, branch, pre_pull_sha, _plan, opts, gateway_mode=gateway_mode,
             is_fork=is_fork, desktop_dir=desktop_dir,
