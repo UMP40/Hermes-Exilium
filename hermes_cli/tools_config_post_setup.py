@@ -11,7 +11,7 @@ from typing import Set
 from hermes_cli.cli_output import (
     print_error as _print_error, print_info as _print_info, print_success as _print_success,
     print_warning as _print_warning)
-from hermes_cli.config import get_env_value
+from hermes_cli.config import get_env_value, load_config, save_config
 from hermes_cli.tools_config_cua import _cua_driver_install_ready, install_cua_driver
 
 
@@ -183,7 +183,7 @@ def _post_setup_spotify() -> None:
         _info_lines("Run manually: hermes auth spotify")
 
 
-def _post_setup_langfuse() -> None:
+def _post_setup_langfuse(config: dict | None = None) -> None:
     import pm
 
     # The bundled plugin has no dependency member; its SDK is an application extra.
@@ -194,10 +194,23 @@ def _post_setup_langfuse() -> None:
         _print_warning(f"    langfuse SDK install failed: {exc}")
         _info_lines("Retry with: hermes tools")
         return
+
+    # Provider setup saves its config after this hook. Mutate the same object.
+    standalone = config is None
+    if standalone:
+        config = load_config()
     try:
-        from hermes_cli.plugins_cmd import cmd_enable
-        cmd_enable("observability/langfuse")
-    except (Exception, SystemExit) as exc:
+        plugins = config.setdefault("plugins", {})
+        enabled = set(plugins.get("enabled", []) or [])
+        if "observability/langfuse" in enabled or "langfuse" in enabled:
+            _print_success("    Plugin observability/langfuse already enabled")
+        else:
+            enabled.add("observability/langfuse")
+            plugins["enabled"] = sorted(enabled)
+            if standalone:
+                save_config(config)
+            _print_success("    Plugin observability/langfuse enabled")
+    except Exception as exc:
         _print_warning(f"    Could not enable plugin automatically: {exc}")
         _info_lines("Run manually: hermes plugins enable observability/langfuse")
         return
@@ -328,8 +341,11 @@ _POST_SETUP_HOOKS: dict = {
 }
 
 
-def _run_post_setup(post_setup_key: str):
-    """Run post-setup hooks for tools that need extra installation steps."""
+def _run_post_setup(post_setup_key: str, config: dict | None = None):
+    """Run post-setup hooks, mutating the caller's config when necessary."""
+    if post_setup_key == "langfuse":
+        _post_setup_langfuse(config)
+        return
     _POST_SETUP_HOOKS.get(post_setup_key, lambda: None)()
 
 
