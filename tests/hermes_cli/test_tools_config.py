@@ -875,7 +875,7 @@ def test_vision_picker_custom_endpoint(tmp_path, monkeypatch):
          patch.object(tcp, "_prompt", side_effect=lambda *a, **k: next(prompts)), \
          patch.object(tcp, "save_env_value") as save_env, \
          patch.object(tc, "_toolset_has_keys", return_value=False):
-        tc._configure_vision_backend()
+        tc._configure_vision_backend(load_config())
 
     v = load_config().get("auxiliary", {}).get("vision", {})
     assert v.get("base_url") == "https://my.endpoint/v1"
