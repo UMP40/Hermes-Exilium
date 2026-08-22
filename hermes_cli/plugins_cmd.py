@@ -1324,10 +1324,17 @@ def _get_enabled_set() -> set:
         return set()
 
 
-def _save_enabled_set(enabled: set) -> None:
-    """Write the enabled plugins list to config.yaml."""
+def _save_enabled_set(enabled: set, config: dict | None = None) -> None:
+    """Write the enabled plugins list to config.yaml.
+
+    ``config`` is the caller's config object when it already holds one —
+    passing it avoids the load/save round-trip of a fresh object, which an
+    outer ``save_config`` of the caller's older object would otherwise
+    overwrite (stale in-memory config overwrite).
+    """
     from hermes_cli.config import load_config, save_config
-    config = load_config()
+    if config is None:
+        config = load_config()
     if "plugins" not in config:
         config["plugins"] = {}
     config["plugins"]["enabled"] = sorted(enabled)

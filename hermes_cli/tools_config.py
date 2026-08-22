@@ -1799,8 +1799,16 @@ def _ensure_browser_use_cli(*, verbose_hints: bool = False) -> None:
         _print_info("    Cloud browsers: browser-use auth login  (or set BROWSER_USE_API_KEY)")
 
 
-def _run_post_setup(post_setup_key: str):
-    """Run post-setup hooks for tools that need extra installation steps."""
+def _run_post_setup(post_setup_key: str, config: dict | None = None):
+    """Run post-setup hooks for tools that need extra installation steps.
+
+    ``config`` is the caller's config object — sub-steps that persist
+    settings must mutate it instead of loading/saving an independent copy
+    (the caller saves the same object afterwards; a fresh load/save here
+    would be silently overwritten). The standalone ``hermes tools
+    post-setup`` command has no enclosing save, so it leaves it None and
+    the langfuse branch falls back to a fresh load.
+    """
     from hermes_constants import find_node_executable
 
     if post_setup_key in {"agent_browser", "browserbase"}:
@@ -2086,13 +2094,19 @@ def _run_post_setup(post_setup_key: str):
         # The plugin ships in the repo but doesn't load until the user enables
         # it (standalone plugins are opt-in).
         try:
-            from hermes_cli.plugins_cmd import _get_enabled_set, _save_enabled_set
-            enabled = _get_enabled_set()
+            from hermes_cli.plugins_cmd import _save_enabled_set
+            if config is None:
+                # Standalone `hermes tools post-setup` path — no enclosing
+                # save, so a fresh load is safe (no stale overwrite here).
+                from hermes_cli.config import load_config
+                config = load_config()
+            plugins_cfg = config.setdefault("plugins", {})
+            enabled = set(plugins_cfg.get("enabled", []) or [])
             if "observability/langfuse" in enabled or "langfuse" in enabled:
                 _print_success("    Plugin observability/langfuse already enabled")
             else:
                 enabled.add("observability/langfuse")
-                _save_enabled_set(enabled)
+                _save_enabled_set(enabled, config=config)
                 _print_success("    Plugin observability/langfuse enabled")
         except Exception as exc:
             _print_warning(f"    Could not enable plugin automatically: {exc}")
@@ -3005,7 +3019,7 @@ def _configure_toolset(
         _configure_tool_category(ts_key, cat, config, force_fresh=force_fresh)
     else:
         # Simple fallback for vision, moa, etc.
-        _configure_simple_requirements(ts_key)
+        _configure_simple_requirements(ts_key, config)
 
 
 def _plugin_image_gen_providers() -> list[dict]:
@@ -4661,7 +4675,7 @@ def _configure_provider(
 
     if not env_vars:
         if provider.get("post_setup"):
-            _run_post_setup(provider["post_setup"])
+            _run_post_setup(provider["post_setup"], config)
         _print_success(f"  {provider['name']} - no configuration needed!")
         if managed_feature:
             _print_info("  Requests for this tool will be billed to your Nous subscription.")
@@ -4750,7 +4764,7 @@ def _configure_provider(
 
     # Run post-setup hooks if needed
     if provider.get("post_setup") and all_configured:
-        _run_post_setup(provider["post_setup"])
+        _run_post_setup(provider["post_setup"], config)
 
     if all_configured:
         _print_success(f"  {provider['name']} configured!")
@@ -4777,8 +4791,13 @@ def _configure_provider(
             _configure_stt_model(provider["stt_provider"], config)
 
 
-def _configure_vision_backend() -> None:
+def _configure_vision_backend(config: dict) -> None:
     """Interactive vision-backend configuration.
+
+    Mutates and saves the CALLER's config object (never a fresh
+    ``load_config()``): callers hold a config dict they save after the
+    reconfigure flow, and an independent load/save here would be silently
+    overwritten by that outer save (stale in-memory config overwrite).
 
     Vision is an auxiliary task whose provider/model are resolved from
     ``auxiliary.vision.{provider,model,base_url}`` in config.yaml (see
@@ -4803,7 +4822,6 @@ def _configure_vision_backend() -> None:
     ]
     idx = _prompt_choice("  Configure vision backend", choices, 0)
 
-    config = load_config()
     aux = config.setdefault("auxiliary", {})
     if not isinstance(aux, dict):
         aux = {}
@@ -4940,12 +4958,12 @@ def _configure_vision_provider_model(config: dict, vision_cfg: dict) -> None:
     _print_success(f"  Vision set to {slug} / {model}")
 
 
-def _configure_simple_requirements(ts_key: str):
+def _configure_simple_requirements(ts_key: str, config: dict):
     """Simple fallback for toolsets that just need env vars (no provider selection)."""
     if ts_key == "vision":
         if _toolset_has_keys("vision"):
             return
-        _configure_vision_backend()
+        _configure_vision_backend(config)
         return
 
     requirements = TOOLSET_ENV_REQUIREMENTS.get(ts_key, [])
@@ -5012,7 +5030,7 @@ def _reconfigure_tool(
             force_fresh=force_fresh,
         )
     else:
-        _reconfigure_simple_requirements(ts_key)
+        _reconfigure_simple_requirements(ts_key, config)
 
     save_config(config)
 
@@ -5231,7 +5249,7 @@ def _reconfigure_provider(
 
     if not env_vars:
         if provider.get("post_setup"):
-            _run_post_setup(provider["post_setup"])
+            _run_post_setup(provider["post_setup"], config)
         _print_success(f"  {provider['name']} - no configuration needed!")
         if managed_feature:
             _print_info("  Requests for this tool will be billed to your Nous subscription.")
@@ -5280,7 +5298,7 @@ def _reconfigure_provider(
             _print_info("    Kept current")
 
     if provider.get("post_setup"):
-        _run_post_setup(provider["post_setup"])
+        _run_post_setup(provider["post_setup"], config)
 
     # Imagegen backends prompt for model selection on reconfig too.
     plugin_name = provider.get("image_gen_plugin_name")
@@ -5312,13 +5330,13 @@ def _reconfigure_provider(
         _configure_stt_model(provider["stt_provider"], config)
 
 
-def _reconfigure_simple_requirements(ts_key: str):
+def _reconfigure_simple_requirements(ts_key: str, config: dict):
     """Reconfigure simple env var requirements."""
     if ts_key == "vision":
         # Vision has its own provider/model picker (any provider, like
         # `hermes model`). Run it directly so reconfigure doesn't fall back to
         # the generic single-key prompt (which would re-ask for OPENROUTER_API_KEY).
-        _configure_vision_backend()
+        _configure_vision_backend(config)
         return
 
     requirements = TOOLSET_ENV_REQUIREMENTS.get(ts_key, [])
