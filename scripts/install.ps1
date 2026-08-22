@@ -5,7 +5,7 @@
 # Uses uv for fast Python provisioning and package management.
 #
 # Usage:
-#   iex (irm https://hermes-agent.nousresearch.com/install.ps1)
+#   iex (irm https://raw.githubusercontent.com/UMP40/Hermes-Exilium/custom/scripts/install.ps1)
 #
 # Or download and run with options:
 #   .\install.ps1 -NoVenv -SkipSetup
@@ -16,7 +16,7 @@ param(
     [switch]$NoVenv,
     [switch]$SkipSetup,
     [switch]$SkipComputerUse,
-    [string]$Branch = "main",
+    [string]$Branch = "custom",
     # -Commit and -Tag are higher-precedence variants of -Branch for users
     # who need reproducible installs (desktop installer pinning, CI, release
     # bundles).  When set, the repository stage clones $Branch (faster than
@@ -374,8 +374,8 @@ $script:ResolvedPathReport = @{
 # Configuration
 # ============================================================================
 
-$RepoUrlSsh = "git@github.com:NousResearch/hermes-agent.git"
-$RepoUrlHttps = "https://github.com/NousResearch/hermes-agent.git"
+$RepoUrlSsh = "git@github.com:UMP40/Hermes-Exilium.git"
+$RepoUrlHttps = "https://github.com/UMP40/Hermes-Exilium.git"
 $PythonVersion = "3.11"
 # Minor versions the installer accepts when the requested $PythonVersion isn't
 # available, in preference order.  uv discovers both uv-managed and system
@@ -2272,13 +2272,13 @@ function Install-Repository {
                 # for.  GitHub supports archive URLs for commits, tags, and
                 # branches; we honour Commit > Tag > Branch.
                 if ($Commit) {
-                    $zipUrl = "https://github.com/NousResearch/hermes-agent/archive/$Commit.zip"
+                    $zipUrl = "https://github.com/UMP40/Hermes-Exilium/archive/$Commit.zip"
                     $zipLabel = $Commit
                 } elseif ($Tag) {
-                    $zipUrl = "https://github.com/NousResearch/hermes-agent/archive/refs/tags/$Tag.zip"
+                    $zipUrl = "https://github.com/UMP40/Hermes-Exilium/archive/refs/tags/$Tag.zip"
                     $zipLabel = $Tag
                 } else {
-                    $zipUrl = "https://github.com/NousResearch/hermes-agent/archive/refs/heads/$Branch.zip"
+                    $zipUrl = "https://github.com/UMP40/Hermes-Exilium/archive/refs/heads/$Branch.zip"
                     $zipLabel = $Branch
                 }
                 $zipPath = "$env:TEMP\hermes-agent-$zipLabel.zip"
@@ -3144,7 +3144,7 @@ function Write-BootstrapMarker {
 
     $pinnedBranch = $Branch
     if (-not $pinnedBranch) {
-        $pinnedBranch = "main"  # install.ps1's own default for -Branch
+        $pinnedBranch = "custom"  # install.ps1's own default for -Branch
     }
 
     $markerPath = Join-Path $InstallDir ".hermes-bootstrap-complete"
@@ -3212,6 +3212,26 @@ function Copy-ConfigTemplates {
         }
     } else {
         Write-Info "$configPath already exists, keeping it"
+    }
+    # Thin-fork deploy branch: pin updates to this fork's custom branch.
+    # Idempotent -- 'hermes config set' rewrites the same value; runs on the
+    # upgrade path too (config.yaml already exists) so a fork install never
+    # silently falls back to updating main. Best-effort: a missing venv
+    # (e.g. a staged config-templates run before 'venv') only warns.
+    $venvPythonExe = "$InstallDir\venv\Scripts\python.exe"
+    if ((-not $NoVenv) -and (Test-Path -LiteralPath $venvPythonExe)) {
+        $prevHermesHome = $env:HERMES_HOME
+        try {
+            $env:HERMES_HOME = $HermesHome
+            & $venvPythonExe -m hermes_cli.main config set updates.branch custom *> $null
+            if ($LASTEXITCODE -eq 0) {
+                Write-Success "Pinned updates.branch=custom (thin-fork deploy branch)"
+            } else {
+                Write-Warn "Could not pin updates.branch=custom; run 'hermes config set updates.branch custom'"
+            }
+        } finally {
+            $env:HERMES_HOME = $prevHermesHome
+        }
     }
     
     # Create SOUL.md if it doesn't exist (global persona file).
@@ -4023,7 +4043,7 @@ function Install-Desktop {
         }
     }
     if (-not $env:GITHUB_REF_NAME) {
-        $env:GITHUB_REF_NAME = if ($Branch) { $Branch } else { "main" }
+        $env:GITHUB_REF_NAME = if ($Branch) { $Branch } else { "custom" }
     }
     if ($env:GITHUB_SHA) {
         $shaPreview = if ($env:GITHUB_SHA.Length -ge 12) { $env:GITHUB_SHA.Substring(0, 12) } else { $env:GITHUB_SHA }
@@ -4882,7 +4902,7 @@ try {
     Write-Err "Installation failed: $_"
     Write-Host ""
     Write-Info "If the error is unclear, try downloading and running the script directly:"
-    Write-Host "  Invoke-WebRequest -Uri 'https://hermes-agent.nousresearch.com/install.ps1' -OutFile install.ps1" -ForegroundColor Yellow
+    Write-Host "  Invoke-WebRequest -Uri 'https://raw.githubusercontent.com/UMP40/Hermes-Exilium/custom/scripts/install.ps1' -OutFile install.ps1" -ForegroundColor Yellow
     Write-Host "  .\install.ps1" -ForegroundColor Yellow
     Write-Host ""
 }

@@ -92,8 +92,13 @@ def test_install_sh_repository_stage_recovers_from_autostash_conflict(
         "HERMES_INSTALL_DIR": str(managed),
     }
 
+    # Fixtures use a main-only remote; pin the branch explicitly (the
+    # installer's own default is now the fork's deploy branch, "custom").
     result = subprocess.run(
-        ["bash", str(INSTALL_SH), "--stage", "repository", "--non-interactive"],
+        [
+            "bash", str(INSTALL_SH), "--stage", "repository",
+            "--non-interactive", "--branch", "main",
+        ],
         cwd=tmp_path,
         env=env,
         capture_output=True,
@@ -178,8 +183,13 @@ def test_install_sh_repository_stage_clean_apply_drops_stash(
         "HERMES_HOME": str(tmp_path / "hermes-home"),
         "HERMES_INSTALL_DIR": str(managed),
     }
+    # Fixtures use a main-only remote; pin the branch explicitly (the
+    # installer's own default is now the fork's deploy branch, "custom").
     result = subprocess.run(
-        ["bash", str(INSTALL_SH), "--stage", "repository", "--non-interactive"],
+        [
+            "bash", str(INSTALL_SH), "--stage", "repository",
+            "--non-interactive", "--branch", "main",
+        ],
         cwd=tmp_path,
         env=env,
         capture_output=True,

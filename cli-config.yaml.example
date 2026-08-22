@@ -1778,6 +1778,10 @@ updates:
   #   discard - drop the update-created stash after success; use only on managed
   #             installs where local source edits should not persist
   non_interactive_local_changes: "stash"
+  # Update target branch. This fork's deploy branch is "custom" (fixes
+  # rebased onto the upstream mirror); `hermes update` syncs it with
+  # upstream/main. Set "main" for a pure mirror.
+  branch: "custom"
 
 
 # =============================================================================

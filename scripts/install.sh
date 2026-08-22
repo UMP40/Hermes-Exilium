@@ -6,7 +6,7 @@
 # Uses uv for desktop/server installs and Python's stdlib venv + pip on Termux.
 #
 # Usage:
-#   curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/UMP40/Hermes-Exilium/custom/scripts/install.sh | bash
 #
 # Or with options:
 #   curl -fsSL ... | bash -s -- --no-venv --skip-setup
@@ -43,8 +43,8 @@ NC='\033[0m' # No Color
 BOLD='\033[1m'
 
 # Configuration
-REPO_URL_SSH="git@github.com:NousResearch/hermes-agent.git"
-REPO_URL_HTTPS="https://github.com/NousResearch/hermes-agent.git"
+REPO_URL_SSH="git@github.com:UMP40/Hermes-Exilium.git"
+REPO_URL_HTTPS="https://github.com/UMP40/Hermes-Exilium.git"
 HERMES_HOME="${HERMES_HOME:-$HOME/.hermes}"
 # INSTALL_DIR is resolved AFTER arg parsing and OS detection so we can pick an
 # FHS-style layout for root installs.  Track whether the user gave us an
@@ -72,7 +72,7 @@ RUN_SETUP=true
 SKIP_BROWSER=false
 SKIP_COMPUTER_USE=false
 NO_SKILLS=false
-BRANCH="main"
+BRANCH="custom"
 INSTALL_COMMIT=""
 FORCE_COMMIT=false
 ENSURE_DEPS=""
@@ -174,7 +174,7 @@ while [[ $# -gt 0 ]]; do
             echo "  --no-skills    Start with a blank slate — seed no bundled skills, and"
             echo "                   write \$HERMES_HOME/.no-bundled-skills so future"
             echo "                   'hermes update' runs never inject bundled skills either"
-            echo "  --branch NAME  Git branch to install (default: main)"
+            echo "  --branch NAME  Git branch to install (default: custom)"
             echo "  --commit SHA   Pin checkout to a specific commit after clone/update"
             echo "                   (ignored when it would roll an existing install back)"
             echo "  --force-commit Apply --commit even if it rolls the install backwards"
@@ -535,7 +535,7 @@ detect_os() {
             OS="windows"
             DISTRO="windows"
             log_error "Windows detected. Please use the PowerShell installer:"
-            log_info "  iex (irm https://hermes-agent.nousresearch.com/install.ps1)"
+            log_info "  iex (irm https://raw.githubusercontent.com/UMP40/Hermes-Exilium/custom/scripts/install.ps1)"
             exit 1
             ;;
         *)
@@ -1984,6 +1984,21 @@ copy_config_templates() {
         fi
     else
         log_info "~/.hermes/config.yaml already exists, keeping it"
+    fi
+
+    # Thin-fork deploy branch: pin updates to this fork's custom branch.
+    # Idempotent -- `hermes config set` rewrites the same value; runs on the
+    # upgrade path too (config.yaml already exists) so a fork install never
+    # silently falls back to updating main. Best-effort: a missing venv
+    # (e.g. a staged config-templates run before 'venv') only warns.
+    if [ "$USE_VENV" = true ] && [ -x "$INSTALL_DIR/venv/bin/python" ]; then
+        if HERMES_HOME="$HERMES_HOME" \
+            "$INSTALL_DIR/venv/bin/python" -m hermes_cli.main config set \
+            updates.branch custom >/dev/null 2>&1; then
+            log_success "Pinned updates.branch=custom (thin-fork deploy branch)"
+        else
+            log_warn "Could not pin updates.branch=custom; run 'hermes config set updates.branch custom'"
+        fi
     fi
 
     # Create SOUL.md if it doesn't exist (global persona file).
