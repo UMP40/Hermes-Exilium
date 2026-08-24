@@ -9,7 +9,10 @@ from hermes_state_errors import SessionActiveWriteGuardError
 
 def _session_status_tag(status: Optional[str]) -> str:
     """Short fixed-width tag for a session lifecycle status."""
-    return {"complete": "done", "interrupted": "intr", "error": "err", "empty": "empty"}.get(status or "", "-")
+    return {
+        "complete": "done", "interrupted": "intr", "error": "err",
+        "empty": "empty", "archived": "arch",
+    }.get(status or "", "-")
 
 
 def _annotate_session_statuses(sessions: list, session_db) -> None:
@@ -21,7 +24,7 @@ def _annotate_session_statuses(sessions: list, session_db) -> None:
     except Exception:
         return
     for s in sessions:
-        s["_status"] = statuses.get(s.get("id"), "")
+        s["_status"] = "archived" if s.get("archived") else statuses.get(s.get("id"), "")
 
 
 def _label(s: dict) -> str:
