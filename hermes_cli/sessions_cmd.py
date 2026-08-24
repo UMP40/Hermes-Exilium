@@ -311,11 +311,14 @@ def _surface_reader(db):
 
 def _cmd_list(db, args):
     from hermes_state_sessions import workspace_key as _ws_key
-    # LIMIT lives in the query, so probe one row past the cap: it is the only way to know the
-    # page was cut without a second COUNT query (``--limit 0`` is ``LIMIT 0``: no rows, no probe).
+    # Probe one row past the cap to identify truncation without another COUNT query.
     limit = args.limit
     sessions = _surface_reader(db).list_sessions_rich(
-        source=args.source, exclude_sources=_default_exclude(args), limit=limit + 1 if limit > 0 else limit,
+        source=args.source, exclude_sources=_default_exclude(args),
+        limit=limit + 1 if limit > 0 else limit,
+        archived_only=bool(getattr(args, "archived", False)),
+        include_archived=bool(getattr(args, "all", False)),
+        include_hidden=bool(getattr(args, "archived", False)),
     )
     truncated = limit > 0 and len(sessions) > limit
     sessions = sessions[:limit] if truncated else sessions
@@ -339,8 +342,9 @@ def _cmd_list(db, args):
     def _ws(s):  # repo/dir basename, "—" when unbound
         key = _ws_key(s)
         return ((os.path.basename(key.rstrip("/\\")) or key) if key else "—")[:16]
-    _title = lambda s, n: (s.get("title") or "—")[:n]
-    _preview = lambda s, n: s.get("preview", "")[:n]
+    _archive_label = lambda s: "[archived] " if s.get("archived") else ""
+    _title = lambda s, n: (_archive_label(s) + (s.get("title") or "—"))[:n]
+    _preview = lambda s, n: (_archive_label(s) + s.get("preview", ""))[:n]
     _ago = lambda s: _relative_time(s.get("last_active"), session_id=s["id"])
 
     def _src(s):  # current routing platform; "<created>→<current>" when provenance diverged (#56439)
@@ -951,10 +955,23 @@ def _cmd_retitle_skills(db, args):
         print(f"✓ Re-titled {changed} session(s).")
 
 
+def _cmd_unarchive(db, args):
+    session_id = db.resolve_session_id(args.session_id)
+    if not session_id or not db.set_session_archived(session_id, False):
+        print(f"Session '{args.session_id}' not found.")
+        return 1
+    print(f"Unarchived session '{session_id}'.")
+
+
 def _cmd_browse(db, args):
     limit = getattr(args, "limit", 500) or 500
     sessions = _surface_reader(db).list_sessions_rich(
-        source=getattr(args, "source", None), exclude_sources=_default_exclude(args), limit=limit
+        source=getattr(args, "source", None),
+        exclude_sources=_default_exclude(args),
+        limit=limit,
+        archived_only=bool(getattr(args, "archived", False)),
+        include_archived=bool(getattr(args, "all", False)),
+        include_hidden=bool(getattr(args, "archived", False)),
     )
     if not sessions:
         db.close()
@@ -1380,8 +1397,9 @@ _OBSERVATIONAL_DB_ACTIONS = frozenset({"list", "stats", "pinned"})
 _DB_HANDLERS = {
     "list": _cmd_list, "export": _cmd_export, "delete": _cmd_delete, "rename": _cmd_rename, "pinned": _cmd_pinned,
     "prune": partial(_cmd_prune_or_archive, action="prune"), "pin": partial(_cmd_pin, pinning=True),
-    "archive": partial(_cmd_prune_or_archive, action="archive"), "unpin": partial(_cmd_pin, pinning=False),
-    "retitle-skills": _cmd_retitle_skills, "browse": _cmd_browse, "optimize": _cmd_optimize,
+    "archive": partial(_cmd_prune_or_archive, action="archive"), "unarchive": _cmd_unarchive,
+    "unpin": partial(_cmd_pin, pinning=False), "retitle-skills": _cmd_retitle_skills,
+    "browse": _cmd_browse, "optimize": _cmd_optimize,
     "clean-markers": _cmd_clean_markers, "optimize-storage": _cmd_optimize_storage,
     "repair-routing": _cmd_repair_routing, "repair-prompts": _cmd_repair_prompts, "stats": _cmd_stats,
     "refresh-prompts": _cmd_refresh_prompts,
