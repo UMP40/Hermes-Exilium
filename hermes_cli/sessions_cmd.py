@@ -330,7 +330,15 @@ def cmd_sessions(args, sessions_parser=None):
         from hermes_state import workspace_key as _ws_key
 
         sessions = db.list_sessions_rich(
-            source=args.source, exclude_sources=_exclude, limit=args.limit
+            source=args.source,
+            exclude_sources=_exclude,
+            limit=args.limit,
+            archived_only=bool(getattr(args, "archived", False)),
+            include_archived=bool(getattr(args, "all", False)),
+            # Archived-only listing must include hidden rows: a session that
+            # is both archived and hidden would otherwise be unreachable from
+            # every surface (upstream #90946).
+            include_hidden=bool(getattr(args, "archived", False)),
         )
 
         # Workspace filter: match a session by its workspace key (git repo
@@ -358,6 +366,9 @@ def cmd_sessions(args, sessions_parser=None):
             key = _ws_key(s)
             return (os.path.basename(key.rstrip("/\\")) or key) if key else "—"
 
+        def _arch_label(s):
+            return "[archived] " if s.get("archived") else ""
+
         has_ws = bool(_ws_filter) or any(_ws_key(s) for s in sessions)
         has_titles = any(s.get("title") for s in sessions)
 
@@ -372,10 +383,10 @@ def cmd_sessions(args, sessions_parser=None):
                 last_active = _relative_time(s.get("last_active"))
                 ws = _ws_label(s)[:16]
                 if has_titles:
-                    title = (s.get("title") or "—")[:26]
+                    title = (_arch_label(s) + (s.get("title") or "—"))[:26]
                     print(f"{title:<28} {ws:<18} {last_active:<13} {s['id']}")
                 else:
-                    preview = s.get("preview", "")[:36]
+                    preview = (_arch_label(s) + s.get("preview", ""))[:36]
                     print(f"{preview:<38} {ws:<18} {last_active:<13} {s['source']:<6} {s['id']}")
             return
 
@@ -393,7 +404,7 @@ def cmd_sessions(args, sessions_parser=None):
                 else s.get("preview", "")[:48]
             )
             if has_titles:
-                title = (s.get("title") or "—")[:30]
+                title = (_arch_label(s) + (s.get("title") or "—"))[:30]
                 sid = s["id"]
                 print(f"{title:<32} {preview:<40} {last_active:<13} {sid}")
             else:
@@ -1082,6 +1093,17 @@ def cmd_sessions(args, sessions_parser=None):
             print(f"Error: {e}")
             return 1
 
+    elif action == "unarchive":
+        resolved_session_id = db.resolve_session_id(args.session_id)
+        if not resolved_session_id:
+            print(f"Session '{args.session_id}' not found.")
+            return 1
+        if db.set_session_archived(resolved_session_id, False):
+            print(f"Unarchived session '{resolved_session_id}'.")
+        else:
+            print(f"Session '{args.session_id}' not found.")
+            return 1
+
     elif action in ("pin", "unpin"):
         # CLI surface for the durable "keep" flag (issue #52955). Pinned
         # sessions are exempt from the sessions.auto_archive stale sweep and
@@ -1210,7 +1232,12 @@ def cmd_sessions(args, sessions_parser=None):
         source = getattr(args, "source", None)
         _browse_exclude = None if source else ["tool"]
         sessions = db.list_sessions_rich(
-            source=source, exclude_sources=_browse_exclude, limit=limit
+            source=source,
+            exclude_sources=_browse_exclude,
+            limit=limit,
+            archived_only=bool(getattr(args, "archived", False)),
+            include_archived=bool(getattr(args, "all", False)),
+            include_hidden=bool(getattr(args, "archived", False)),
         )
         if not sessions:
             db.close()

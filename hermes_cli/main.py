@@ -1225,6 +1225,7 @@ def _session_status_tag(status: Optional[str]) -> str:
         "interrupted": "intr",
         "error": "err",
         "empty": "empty",
+        "archived": "arch",
     }.get(status or "", "-")
 
 
@@ -1244,7 +1245,9 @@ def _annotate_session_statuses(sessions: list, session_db) -> None:
     except Exception:
         return
     for s in sessions:
-        s["_status"] = statuses.get(s.get("id"), "")
+        s["_status"] = (
+            "archived" if s.get("archived") else statuses.get(s.get("id"), "")
+        )
 
 
 def _session_browse_picker(sessions: list, session_db=None) -> Optional[str]:
@@ -13555,7 +13558,7 @@ def main():
     # =========================================================================
     sessions_parser = subparsers.add_parser(
         "sessions",
-        help="Manage session history (list, rename, export, prune, delete)",
+        help="Manage session history (list, archive, unarchive, export, prune, delete)",
         description="View and manage the SQLite session store",
     )
     sessions_subparsers = sessions_parser.add_subparsers(dest="sessions_action")
@@ -13572,6 +13575,17 @@ def main():
         metavar="NEEDLE",
         help="Only sessions in one workspace: a git repo root or project dir "
         "(matched by path substring or basename).",
+    )
+    sessions_list_archive_group = sessions_list.add_mutually_exclusive_group()
+    sessions_list_archive_group.add_argument(
+        "--archived",
+        action="store_true",
+        help="Show only archived sessions (including hidden archived sessions)",
+    )
+    sessions_list_archive_group.add_argument(
+        "--all",
+        action="store_true",
+        help="Include archived sessions alongside active sessions",
     )
 
     def _add_session_filter_args(p, default_older_help):
@@ -13797,6 +13811,15 @@ def main():
         sessions_archive,
         "Only archive sessions older than AGE (duration like '5h'/'2d', "
         "bare number of days, or ISO timestamp)",
+    )
+
+    sessions_unarchive = sessions_subparsers.add_parser(
+        "unarchive",
+        help="Restore an archived session to the active session list",
+    )
+    sessions_unarchive.add_argument(
+        "session_id",
+        help="Session ID or unique prefix to unarchive",
     )
 
     sessions_subparsers.add_parser(
@@ -14031,6 +14054,17 @@ def main():
     )
     sessions_browse.add_argument(
         "--limit", type=int, default=500, help="Max sessions to load (default: 500)"
+    )
+    sessions_browse_archive_group = sessions_browse.add_mutually_exclusive_group()
+    sessions_browse_archive_group.add_argument(
+        "--archived",
+        action="store_true",
+        help="Browse only archived sessions (including hidden archived sessions)",
+    )
+    sessions_browse_archive_group.add_argument(
+        "--all",
+        action="store_true",
+        help="Include archived sessions alongside active sessions",
     )
 
     sessions_import = sessions_subparsers.add_parser(
