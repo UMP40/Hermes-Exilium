@@ -40,7 +40,7 @@
 适用于已按官方方式（git 安装）安装的 Hermes。前提：工作树干净、无未推送提交。
 
 ```bash
-cd <你的 hermes-agent checkout>   # 默认 ~/.hermes/hermes-agent
+cd <你的 hermes-agent checkout>   # POSIX 默认 ~/.hermes/hermes-agent；Windows 默认 %LOCALAPPDATA%\hermes\hermes-agent
 
 # 1. origin 指向本 fork，官方仓库改为 upstream
 git remote set-url origin https://github.com/UMP40/Hermes-Exilium.git
@@ -53,7 +53,7 @@ git fetch origin custom
 # 3. 切到部署分支
 git checkout -B custom origin/custom
 
-# 4. 依赖如有变化则同步
+# 4. 依赖如有变化则同步（Windows venv 内可用 .\venv\Scripts\pip.exe）
 pip install -e '.[all]'
 
 # 5. 更新目标固定为 custom
@@ -82,6 +82,73 @@ git fetch origin custom
 git merge --ff-only origin/custom
 ```
 
-（如维护者 rebase 过历史则不是 fast-forward，此时等下一次形态 A 更新，或手动 `git reset --hard origin/custom`。）
+（以上两条命令在 PowerShell 下完全一致。如维护者 rebase 过历史则不是 fast-forward，此时等下一次形态 A 更新，或手动 `git reset --hard origin/custom`。）
+
 
 日常依赖启动提示即可：`updates.notify: release` 模式下，官方发布新版本 tag 时启动横幅会提示执行 `hermes update`。
+
+## 下游更新遇冲突中断后的恢复
+
+`hermes update` 在薄 fork 模式下 rebase 失败（与上游冲突）时会**干净中止**：自动 `git rebase --abort`、本地 `custom` 保持原基线不动、不推送任何内容，仅 `main` 镜像被推进到新上游（无害，设计如此）。此后每次重跑 `hermes update` 都会撞同一个冲突——不会自愈，必须等维护者解决并发布新 `custom` 后，在下游执行一次性对齐：
+
+**维护者侧（解决冲突并发布，通常已完成）**：在开发机上 `git rebase main` 手动解决冲突 → 跑 fork 回归测试 → `git push --force-with-lease origin custom`。
+
+**下游侧（对齐被重写的历史）**：
+
+```bash
+cd <hermes-agent checkout>   # POSIX 默认 ~/.hermes/hermes-agent；Windows 默认 $env:LOCALAPPDATA\hermes\hermes-agent
+
+# 1. 确认状态干净、无残留 rebase（中止契约正常时本就干净）
+git rebase --abort 2>/dev/null; git status --short   # 应为空
+
+# 2. 本地有未推送提交则先停下检查；正常下游应无输出
+git log origin/custom..custom --oneline
+
+# 3. 对齐 main 镜像（保持仓库结构规整，可选）
+git fetch upstream main && git branch -f main upstream/main
+
+# 4. 拉取重写后的 custom 并硬重置（rebase 重写了历史，无 fast-forward 关系）
+git fetch origin custom
+git reset --hard origin/custom
+
+# 5. 依赖同步（上游跨度大时必须）
+pip install -e '.[all]'
+
+# 6. 重启常驻进程
+hermes gateway restart
+```
+
+**PowerShell（Windows）等价命令**——与 POSIX 的实际差异仅两处：stderr 丢弃写法（`2>$null`）与安装目录；`git branch -f` 保守拆成两条以便 PowerShell 5.1 也能直接运行（pwsh 7+ 可用 `&&` 合并）：
+
+```powershell
+cd <hermes-agent checkout>   # Windows 默认 $env:LOCALAPPDATA\hermes\hermes-agent
+
+# 1. 确认状态干净（PowerShell 丢弃 stderr 用 2>$null，不是 2>/dev/null）
+git rebase --abort 2>$null; git status --short
+
+# 2. 检查未推送提交（与 POSIX 相同）
+git log origin/custom..custom --oneline
+
+# 3. 对齐 main 镜像（拆成两条以兼容 PowerShell 5.1；pwsh 7+ 可用 && 连接）
+git fetch upstream main
+git branch -f main upstream/main
+
+# 4. 重置（与 POSIX 相同）
+git fetch origin custom
+git reset --hard origin/custom
+
+# 5. 依赖同步（与 POSIX 相同；venv 内用 .\venv\Scripts\pip.exe）
+pip install -e ".[all]"
+
+# 6. 重启常驻进程（与 POSIX 相同）
+hermes gateway restart
+```
+
+验证：
+
+```bash
+hermes --version        # local hash 应与 origin/custom 一致
+hermes update --check   # → Fetching from upstream... ✓ Already up to date.
+```
+
+对齐后即恢复正常流程：下次上游前进时 `hermes update` 自动完成 rebase + 测试门 + 推送。多机部署时哪台先跑 update 哪台推送，后跑的机器会遇到 custom 被别处推进的情况——届时同样 `git fetch origin custom && git reset --hard origin/custom` 一次性对齐即可。
