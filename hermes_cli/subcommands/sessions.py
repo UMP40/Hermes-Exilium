@@ -15,7 +15,7 @@ def _flag(parser, *names, help, **kw):
 def build_sessions_parser(subparsers, *, cmd_sessions: Callable) -> None:
     """Attach the ``sessions`` subcommand to ``subparsers``."""
     sessions_parser = subparsers.add_parser(
-        "sessions", help="Manage session history (list, rename, export, prune, delete)",
+        "sessions", help="Manage session history (list, archive, unarchive, export, prune, delete)",
         description="View and manage the SQLite session store")
     sessions_subparsers = sessions_parser.add_subparsers(dest="sessions_action")
 
@@ -25,6 +25,11 @@ def build_sessions_parser(subparsers, *, cmd_sessions: Callable) -> None:
     sessions_list.add_argument("--workspace", metavar="NEEDLE",
         help="Only sessions in one workspace: a git repo root or project dir "
         "(matched by path substring or basename).")
+    list_archive_group = sessions_list.add_mutually_exclusive_group()
+    _flag(list_archive_group, "--archived",
+        help="Show only archived sessions (including hidden archived sessions)")
+    _flag(list_archive_group, "--all",
+        help="Include archived sessions alongside active sessions")
 
     _filter_args = (
         ("--newer-than", dict(metavar="AGE", help="Only match sessions active within the last AGE "
@@ -123,6 +128,11 @@ def build_sessions_parser(subparsers, *, cmd_sessions: Callable) -> None:
     _add_session_filter_args(
         sessions_archive, "Only archive sessions older than AGE (duration like '5h'/'2d', "
         "bare number of days, or ISO timestamp)")
+    sessions_unarchive = sessions_subparsers.add_parser(
+        "unarchive", help="Restore an archived session to the active session list")
+    sessions_unarchive.add_argument(
+        "session_id", help="Session ID or unique prefix to unarchive")
+
 
     sessions_subparsers.add_parser(
         "optimize", help="Reclaim disk space: merge FTS5 segments + VACUUM (no data change)")
@@ -246,6 +256,11 @@ def build_sessions_parser(subparsers, *, cmd_sessions: Callable) -> None:
     sessions_browse.add_argument("--source", help="Filter by source (cli, telegram, discord, etc.)")
     sessions_browse.add_argument(
         "--limit", type=int, default=500, help="Max sessions to load (default: 500)")
+    browse_archive_group = sessions_browse.add_mutually_exclusive_group()
+    _flag(browse_archive_group, "--archived",
+        help="Browse only archived sessions (including hidden archived sessions)")
+    _flag(browse_archive_group, "--all",
+        help="Include archived sessions alongside active sessions")
 
     sessions_import = sessions_subparsers.add_parser(
         "import", help="Import a Claude Code or Codex CLI session into Hermes",

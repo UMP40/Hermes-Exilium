@@ -261,7 +261,14 @@ def _default_exclude(args):
 
 def _cmd_list(db, args):
     from hermes_state_sessions import workspace_key as _ws_key
-    sessions = db.list_sessions_rich(source=args.source, exclude_sources=_default_exclude(args), limit=args.limit)
+    sessions = db.list_sessions_rich(
+        source=args.source,
+        exclude_sources=_default_exclude(args),
+        limit=args.limit,
+        archived_only=bool(getattr(args, "archived", False)),
+        include_archived=bool(getattr(args, "all", False)),
+        include_hidden=bool(getattr(args, "archived", False)),
+    )
 
     # Workspace filter: workspace key (git repo root, else cwd) — path substring or exact basename.
     _ws_filter = (getattr(args, "workspace", None) or "").strip()
@@ -282,8 +289,9 @@ def _cmd_list(db, args):
     def _ws(s):  # repo/dir basename, "—" when unbound
         key = _ws_key(s)
         return ((os.path.basename(key.rstrip("/\\")) or key) if key else "—")[:16]
-    _title = lambda s, n: (s.get("title") or "—")[:n]  # noqa: E731
-    _preview = lambda s, n: s.get("preview", "")[:n]  # noqa: E731
+    _archive_label = lambda s: "[archived] " if s.get("archived") else ""  # noqa: E731
+    _title = lambda s, n: (_archive_label(s) + (s.get("title") or "—"))[:n]  # noqa: E731
+    _preview = lambda s, n: (_archive_label(s) + s.get("preview", ""))[:n]  # noqa: E731
     _ago = lambda s: _relative_time(s.get("last_active"), session_id=s["id"])  # noqa: E731
     layouts = {  # (has_ws, has_titles): header, rule width, row formatter
         (True, True): (f"{'Title':<28} {'Workspace':<18} {'Last Active':<13} {'ID'}", 110,
@@ -789,10 +797,23 @@ def _cmd_retitle_skills(db, args):
         print(f"✓ Re-titled {changed} session(s).")
 
 
+def _cmd_unarchive(db, args):
+    session_id = db.resolve_session_id(args.session_id)
+    if not session_id or not db.set_session_archived(session_id, False):
+        print(f"Session '{args.session_id}' not found.")
+        return 1
+    print(f"Unarchived session '{session_id}'.")
+
+
 def _cmd_browse(db, args):
     limit = getattr(args, "limit", 500) or 500
     sessions = db.list_sessions_rich(
-        source=getattr(args, "source", None), exclude_sources=_default_exclude(args), limit=limit
+        source=getattr(args, "source", None),
+        exclude_sources=_default_exclude(args),
+        limit=limit,
+        archived_only=bool(getattr(args, "archived", False)),
+        include_archived=bool(getattr(args, "all", False)),
+        include_hidden=bool(getattr(args, "archived", False)),
     )
     if not sessions:
         db.close()
@@ -956,8 +977,9 @@ _PRE_DB_HANDLERS = {"repair": _cmd_repair, "recover": _cmd_recover, "import": _c
 _DB_HANDLERS = {
     "list": _cmd_list, "export": _cmd_export, "delete": _cmd_delete, "rename": _cmd_rename, "pinned": _cmd_pinned,
     "prune": partial(_cmd_prune_or_archive, action="prune"), "pin": partial(_cmd_pin, pinning=True),
-    "archive": partial(_cmd_prune_or_archive, action="archive"), "unpin": partial(_cmd_pin, pinning=False),
-    "retitle-skills": _cmd_retitle_skills, "browse": _cmd_browse, "optimize": _cmd_optimize,
+    "archive": partial(_cmd_prune_or_archive, action="archive"), "unarchive": _cmd_unarchive,
+    "unpin": partial(_cmd_pin, pinning=False), "retitle-skills": _cmd_retitle_skills,
+    "browse": _cmd_browse, "optimize": _cmd_optimize,
     "clean-markers": _cmd_clean_markers, "optimize-storage": _cmd_optimize_storage,
     "repair-routing": _cmd_repair_routing, "stats": _cmd_stats,
 }

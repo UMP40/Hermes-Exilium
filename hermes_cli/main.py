@@ -1133,6 +1133,7 @@ def _confirm_startup_expensive_model_override(args) -> None:
         raise SystemExit(1)
 
 
+
 def _resolve_workspace_key() -> Optional[str]:
     """The current workspace identity for cwd-scoped resume.
 
