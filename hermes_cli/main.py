@@ -13767,7 +13767,10 @@ def main():
     sessions_delete = sessions_subparsers.add_parser(
         "delete", help="Delete a specific session"
     )
-    sessions_delete.add_argument("session_id", help="Session ID to delete")
+    sessions_delete.add_argument(
+        "session_id",
+        help="Session ID or unique prefix to delete",
+    )
     sessions_delete.add_argument(
         "--yes", "-y", action="store_true", help="Skip confirmation"
     )
@@ -13989,7 +13992,10 @@ def main():
     sessions_rename = sessions_subparsers.add_parser(
         "rename", help="Set or change a session's title"
     )
-    sessions_rename.add_argument("session_id", help="Session ID to rename")
+    sessions_rename.add_argument(
+        "session_id",
+        help="Session ID or unique prefix to rename",
+    )
     sessions_rename.add_argument("title", nargs="+", help="New title for the session")
 
     sessions_pin = sessions_subparsers.add_parser(
