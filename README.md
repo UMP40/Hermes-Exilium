@@ -15,27 +15,27 @@
 
 ### 更新机制
 
-- **可配置的更新分支**（`44c578e3b`）：新增 `updates.branch` 配置项，可将默认更新目标从 `main` 改为任意分支（本 fork 使用 `custom`）。
-- **薄 fork 更新工作流**（`9372a3e97`）：检测到上游前进时，`hermes update` 自动执行：同步 `main` 镜像到 `upstream/main` 并推送 → 将 `custom` rebase 到新 `main` → 运行本 fork 的回归测试（fork 新增的 `tests/` 文件）→ 测试通过才 force-push 两分支。rebase 冲突会干净中止（`custom` 不动），测试失败则阻断推送。
-- **镜像推送 lease 修复**（`d40710e8c`）：修复 single-branch clone 下 `main` 镜像推送因 `--force-with-lease` 基准错误被永久拒绝的问题。
+- **可配置的更新分支**：新增 `updates.branch` 配置项，可将默认更新目标从 `main` 改为任意分支（本 fork 使用 `custom`）。
+- **薄 fork 更新工作流**：检测到上游前进时，`hermes update` 自动执行：同步 `main` 镜像到 `upstream/main` 并推送 → 将 `custom` rebase 到新 `main` → 运行本 fork 的回归测试（fork 新增的 `tests/` 文件）→ 测试通过才 force-push 两分支。rebase 冲突会干净中止（`custom` 不动），测试失败则阻断推送。
+- **镜像推送 lease 修复**：修复 single-branch clone 下 `main` 镜像推送因 `--force-with-lease` 基准错误被永久拒绝的问题。
 
 ### 启动提示
 
-- **三档更新提示**（`77a15cc63`）：新增 `updates.notify` 配置——
+- **三档更新提示**：新增 `updates.notify` 配置——
   - `release`（默认）：仅当官方发布新的日历版本 tag（`vYYYY.M.D`）时提示；
   - `commit`：官方 `main` 有新提交即提示；
   - `off`：不提示（YAML 中需加引号写作 `"off"`，裸词会被解析为布尔值）。
 
 ### Bug 修复
 
-- **配置静默覆盖**（`f6aeb54bc`）：修复 tools/reconfigure 流程中"子流程写入的 vision / langfuse 配置被外层旧配置对象覆盖丢失"的问题。
-- **ANSI 颜色渲染**（`71e70aa52`）：更新提示改经 prompt_toolkit 渲染器输出（修复被 `patch_stdout` 吞掉转义字符产生的 `?[33m` 乱码）；stderr 警告（配置问题、`.env` 弃用项、xAI 模型退役）改为条件上色——仅在 stderr 本身是 TTY 时输出颜色，重定向/日志不再泄漏裸转义序列。
-- **会话归档 CLI 单向门**（`675e2056f`）：`hermes sessions archive` 原本只能归档、无法列出或恢复，归档会话对 CLI 用户不可达。新增 `list`/`browse` 的 `--archived`（仅归档，含 archived+hidden 以保证恢复入口）与 `--all`（归档与活跃并列表），以及 `unarchive <id-or-prefix>`（压缩链整体翻转恢复）；`browse` 归档行标记 `arch`；并修正 session-librarian 技能文档对"列出归档会话"的引用（原误用 prune 专属的 `--include-archived`，改为 `hermes sessions list --archived`）。
-- **会话 ID 前缀说明补全**（`675e2056f` 后续）：`sessions delete`/`rename` 的帮助文本补注"接受唯一 ID 前缀"，与原有代码实现保持一致，现与 `unarchive`/`pin`/`unpin`/`export` 的既有说明格式相同。
+- **配置静默覆盖**：修复 tools/reconfigure 流程中"子流程写入的 vision / langfuse 配置被外层旧配置对象覆盖丢失"的问题。
+- **ANSI 颜色渲染**：更新提示改经 prompt_toolkit 渲染器输出（修复被 `patch_stdout` 吞掉转义字符产生的 `?[33m` 乱码）；stderr 警告（配置问题、`.env` 弃用项、xAI 模型退役）改为条件上色——仅在 stderr 本身是 TTY 时输出颜色，重定向/日志不再泄漏裸转义序列。
+- **会话归档 CLI 单向门**：`hermes sessions archive` 原本只能归档、无法列出或恢复，归档会话对 CLI 用户不可达。新增 `list`/`browse` 的 `--archived`（仅归档，含 archived+hidden 以保证恢复入口）与 `--all`（归档与活跃并列表），以及 `unarchive <id-or-prefix>`（压缩链整体翻转恢复）；`browse` 归档行标记 `arch`；并修正 session-librarian 技能文档对"列出归档会话"的引用（原误用 prune 专属的 `--include-archived`，改为 `hermes sessions list --archived`）。
+- **会话 ID 前缀说明补全**：`sessions delete`/`rename` 的帮助文本补注"接受唯一 ID 前缀"，与原有代码实现保持一致，现与 `unarchive`/`pin`/`unpin`/`export` 的既有说明格式相同。
 
 ### 安装
 
-- **安装脚本指向本 fork**（`8bb867ea2`）：`install.sh` / `install.ps1` / `install.cmd` / bootstrap-installer 默认从本 fork 的 `custom` 分支安装，并在安装后自动写入 `updates.branch: custom`。
+- **安装脚本指向本 fork**：install.sh / install.ps1 / install.cmd / bootstrap-installer 默认从本 fork 的 `custom` 分支安装，并在安装后自动写入 `updates.branch: custom`。
 
 ## 从官方安装迁移到本 fork
 
