@@ -213,3 +213,79 @@ def test_sessions_list_all_passes_include_archived_without_hidden(
     kw = captured["kwargs"]
     assert kw["include_archived"] is True
     assert "include_hidden" not in kw or kw["include_hidden"] is False
+
+
+# ---------------------------------------------------------------------------
+# Help discoverability + argparse contracts (fork-added archive surface)
+# ---------------------------------------------------------------------------
+
+
+def _run_argv(monkeypatch, argv_tail):
+    import hermes_cli.main as hm
+
+    monkeypatch.setattr("sys.argv", ["hermes"] + argv_tail)
+    try:
+        hm.main()
+    except SystemExit as exc:
+        return exc.code
+    return 0
+
+
+def test_sessions_group_help_lists_unarchive(monkeypatch, capsys):
+    code = _run_argv(monkeypatch, ["sessions", "-h"])
+    assert code == 0
+    assert "unarchive" in capsys.readouterr().out
+
+
+def test_sessions_list_help_documents_archive_flags(monkeypatch, capsys):
+    code = _run_argv(monkeypatch, ["sessions", "list", "-h"])
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "--archived" in out and "--all" in out
+
+
+def test_sessions_browse_help_documents_archive_flags(monkeypatch, capsys):
+    code = _run_argv(monkeypatch, ["sessions", "browse", "-h"])
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "--archived" in out and "--all" in out
+
+
+
+def test_sessions_list_archived_all_mutually_exclusive(monkeypatch, capsys):
+    code = _run_argv(monkeypatch, ["sessions", "list", "--archived", "--all"])
+    assert code == 2
+    assert "not allowed with argument" in capsys.readouterr().err
+
+
+def test_sessions_browse_archived_all_mutually_exclusive(monkeypatch, capsys):
+    code = _run_argv(monkeypatch, ["sessions", "browse", "--archived", "--all"])
+    assert code == 2
+    assert "not allowed with argument" in capsys.readouterr().err
+
+
+def test_unarchive_full_argv_prefix_flips_flag(tmp_path, monkeypatch, capsys):
+    db, _ = _real_db(tmp_path, monkeypatch)
+    sid = db.create_session("arch-argv-1", source="cli")
+    db.set_session_archived(sid, True)
+    try:
+        code, _ = _run_cli(
+            monkeypatch, capsys, ["sessions", "unarchive", "arch-argv"], db
+        )
+        assert code == 0
+        assert db.get_session(sid)["archived"] == 0
+    finally:
+        db.close()
+    assert "Unarchived session" in capsys.readouterr().out
+
+
+def test_unarchive_full_argv_missing_returns_1(tmp_path, monkeypatch, capsys):
+    db, _ = _real_db(tmp_path, monkeypatch)
+    try:
+        code, _ = _run_cli(
+            monkeypatch, capsys, ["sessions", "unarchive", "nope_xyz"], db
+        )
+    finally:
+        db.close()
+    assert code == 1
+    assert "not found" in capsys.readouterr().out.lower()
