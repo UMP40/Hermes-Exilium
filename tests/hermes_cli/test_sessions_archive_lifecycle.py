@@ -251,6 +251,13 @@ def test_sessions_browse_help_documents_archive_flags(monkeypatch, capsys):
     assert "--archived" in out and "--all" in out
 
 
+def test_sessions_delete_rename_help_document_unique_prefix(monkeypatch, capsys):
+    for sub in ("delete", "rename"):
+        code = _run_argv(monkeypatch, ["sessions", sub, "-h"])
+        assert code == 0
+        assert "unique prefix" in capsys.readouterr().out
+
+
 
 def test_sessions_list_archived_all_mutually_exclusive(monkeypatch, capsys):
     code = _run_argv(monkeypatch, ["sessions", "list", "--archived", "--all"])

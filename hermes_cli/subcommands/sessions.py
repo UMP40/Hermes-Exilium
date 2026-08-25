@@ -104,8 +104,7 @@ def build_sessions_parser(subparsers, *, cmd_sessions: Callable) -> None:
     _flag(sessions_export, "--force", help="md/qmd only: overwrite an existing export file")
 
     sessions_delete = sessions_subparsers.add_parser("delete", help="Delete a specific session")
-    sessions_delete.add_argument("session_id", help="Session ID to delete")
-    add_yes_flag(sessions_delete, "Skip confirmation")
+    sessions_delete.add_argument("session_id", help="Session ID or unique prefix to delete")
 
     sessions_prune = sessions_subparsers.add_parser(
         "prune", help="Delete old sessions (filterable by time window, source, title, ...)")
@@ -220,9 +219,8 @@ def build_sessions_parser(subparsers, *, cmd_sessions: Callable) -> None:
 
     sessions_rename = sessions_subparsers.add_parser(
         "rename", help="Set or change a session's title")
-    sessions_rename.add_argument("session_id", help="Session ID to rename")
+    sessions_rename.add_argument("session_id", help="Session ID or unique prefix to rename")
     sessions_rename.add_argument("title", nargs="+", help="New title for the session")
-
     sessions_pin = sessions_subparsers.add_parser(
         "pin", help="Pin session(s) — durable keep flag, exempt from auto-archive",
         description="Set the durable 'keep' flag on one or more sessions. Pinned "
