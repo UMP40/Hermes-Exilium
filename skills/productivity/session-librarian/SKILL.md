@@ -71,7 +71,7 @@ explicitly dictated can be done directly.
   `hermes sessions export --format md` as a backup.
 
 ⑤ **Report.** Renames applied, sessions archived (count + how to undo:
-archived sessions remain in the DB and are listed with `--include-archived`),
+archived sessions remain in the DB and are listed with `hermes sessions list --archived`),
 anything exported, anything skipped and why.
 
 ## Parallel Workstreams

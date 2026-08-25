@@ -30,7 +30,7 @@
 
 - **配置静默覆盖**（`f6aeb54bc`）：修复 tools/reconfigure 流程中"子流程写入的 vision / langfuse 配置被外层旧配置对象覆盖丢失"的问题。
 - **ANSI 颜色渲染**（`71e70aa52`）：更新提示改经 prompt_toolkit 渲染器输出（修复被 `patch_stdout` 吞掉转义字符产生的 `?[33m` 乱码）；stderr 警告（配置问题、`.env` 弃用项、xAI 模型退役）改为条件上色——仅在 stderr 本身是 TTY 时输出颜色，重定向/日志不再泄漏裸转义序列。
-- **会话归档 CLI 单向门**（`675e2056f`）：`hermes sessions archive` 原本只能归档、无法列出或恢复，归档会话对 CLI 用户不可达。新增 `list`/`browse` 的 `--archived`（仅归档，含 archived+hidden 以保证恢复入口）与 `--all`（归档与活跃并列表），以及 `unarchive <id-or-prefix>`（压缩链整体翻转恢复）；`browse` 归档行标记 `arch`。
+- **会话归档 CLI 单向门**（`675e2056f`）：`hermes sessions archive` 原本只能归档、无法列出或恢复，归档会话对 CLI 用户不可达。新增 `list`/`browse` 的 `--archived`（仅归档，含 archived+hidden 以保证恢复入口）与 `--all`（归档与活跃并列表），以及 `unarchive <id-or-prefix>`（压缩链整体翻转恢复）；`browse` 归档行标记 `arch`；并修正 session-librarian 技能文档对"列出归档会话"的引用（原误用 prune 专属的 `--include-archived`，改为 `hermes sessions list --archived`）。
 
 ### 安装
 
