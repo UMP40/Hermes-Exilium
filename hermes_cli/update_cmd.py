@@ -601,9 +601,24 @@ def _is_shallow_checkout(git_cmd, cwd=None) -> bool:
     )
 
 
-def _tip_shas(git_cmd, target_ref: str) -> tuple[str, str]:
+def _tip_shas(git_cmd, target_ref: str, cwd=None) -> tuple[str, str]:
     """``(HEAD sha, <target_ref> sha)`` as printed by rev-parse ("" when unresolvable)."""
-    return tuple(_git_run(git_cmd, ["rev-parse", ref]).stdout.strip() for ref in ("HEAD", target_ref))
+    return tuple(
+        _git_run(git_cmd, ["rev-parse", ref], cwd).stdout.strip()
+        for ref in ("HEAD", target_ref)
+    )
+
+
+def _recover_shallow_update_count(
+    git_cmd, cwd, commit_count: int, target_ref: str
+) -> int:
+    """Recover a shallow graph's real behind count against the selected target."""
+    if commit_count <= 0 or not _is_shallow_checkout(git_cmd, cwd):
+        return commit_count
+    from hermes_cli.banner import _github_compare_behind
+
+    counted = _github_compare_behind(*_tip_shas(git_cmd, target_ref, cwd))
+    return counted if counted is not None else -1
 
 
 def _print_update_check_result(behind: int | None, compare_branch: str) -> None:
@@ -1213,12 +1228,9 @@ def _prepare_checkout_for_update(
     result = _git_run(
         git_cmd, ["rev-list", f"HEAD..{count_ref}", "--count"], check=True
     )
-    commit_count = int(result.stdout.strip())
-    if commit_count > 0 and _is_shallow_checkout(git_cmd):
-        from hermes_cli.banner import _github_compare_behind
-
-        counted = _github_compare_behind(*_tip_shas(git_cmd, count_ref))
-        commit_count = counted if counted is not None else -1
+    commit_count = _recover_shallow_update_count(
+        git_cmd, _m().PROJECT_ROOT, int(result.stdout.strip()), count_ref
+    )
 
     # A fork can match origin yet trail upstream, so the sync can move HEAD with
     # commit_count == 0; detect that BEFORE the no-update return so deps, restarts AND the

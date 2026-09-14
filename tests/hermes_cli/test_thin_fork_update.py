@@ -193,6 +193,64 @@ def test_workflow_rebases_custom_gates_on_tests_and_pushes(
     assert log == ["tests/test_fix.py"]
 
 
+def test_workflow_rebases_disconnected_shallow_checkout_from_prior_main_reflog(
+    fork_world, tmp_path
+):
+    """The live incident: separately shallow old/new upstream tips have no
+    merge-base, but main's reflog still identifies the fork-only commit range.
+    """
+    old_main = _git(fork_world.fork, "rev-parse", "main").stdout.strip()
+    pre_custom = _head(fork_world.fork)
+    _advance_upstream(fork_world)
+    new_main = _git(
+        fork_world.fork, "rev-parse", "upstream/main"
+    ).stdout.strip()
+
+    # Reproduce an earlier mirror-only update: main and origin/main moved,
+    # custom did not. Mark both upstream tips shallow so normal rebase sees
+    # unrelated roots and would attempt an add/add replay of the whole tree.
+    _git(fork_world.fork, "branch", "-f", "main", new_main)
+    _git(
+        fork_world.fork,
+        "push",
+        "-q",
+        "--force",
+        str(fork_world.origin),
+        "main",
+    )
+    shallow_file = fork_world.fork / ".git" / "shallow"
+    shallow_file.write_text(f"{old_main}\n{new_main}\n", encoding="ascii")
+    assert (
+        _git(
+            fork_world.fork,
+            "merge-base",
+            "custom",
+            "main",
+            check=False,
+        ).returncode
+        != 0
+    )
+
+    runner = _make_runner(tmp_path, "shallow_pass_runner.py", 0)
+    assert update_cmd._thin_fork_update_workflow(
+        GIT,
+        fork_world.fork,
+        test_runner=[sys.executable, str(runner)],
+    )
+
+    assert _head(fork_world.fork) != pre_custom
+    assert (
+        _git(
+            fork_world.fork,
+            "merge-base",
+            "--is-ancestor",
+            "main",
+            "custom",
+        ).returncode
+        == 0
+    )
+
+
 def test_workflow_rebase_conflict_aborts_without_pushing(fork_world, tmp_path):
     # Upstream adds its own fix.py — an add/add conflict with the fork's.
     _advance_upstream(fork_world, file="fix.py", content="UPSTREAM = True\n")
