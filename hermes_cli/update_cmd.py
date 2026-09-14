@@ -727,6 +727,18 @@ def _tip_shas(git_cmd, target_ref: str, base: str = "HEAD") -> tuple[str, str]:
     return tuple(_git_run(git_cmd, ["rev-parse", ref]).stdout.strip() for ref in (base, target_ref))
 
 
+def _recover_shallow_update_count(git_cmd, cwd, commit_count: int, target_ref: str) -> int:
+    """Recover a shallow graph's real behind count against the selected target."""
+    if commit_count <= 0 or not _is_shallow_checkout(git_cmd, cwd):
+        return commit_count
+    from hermes_cli.source_check import _github_compare_behind
+
+    tips = tuple(_git_run(git_cmd, ["rev-parse", ref], cwd).stdout.strip()
+                 for ref in ("HEAD", target_ref))
+    counted = _github_compare_behind(*tips)
+    return counted if counted is not None else -1
+
+
 def _print_update_check_result(behind: int | None, compare_branch: str) -> None:
     """Report ``--check``'s verdict: up to date, N commits behind, or behind by an unknown count."""
     if behind == 0:
