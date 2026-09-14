@@ -59,7 +59,7 @@ def test_upstream_release_tags_empty_on_failure():
 # ---------------------------------------------------------------------------
 
 def test_check_via_upstream_release_notifies_on_newer_tag():
-    with patch.object(
+    with patch.object(banner, "RELEASE_DATE", "2026.8.19"), patch.object(
         banner, "_upstream_release_tags",
         return_value=[(2026, 8, 19), (2026, 8, 20)],
     ):
@@ -67,9 +67,13 @@ def test_check_via_upstream_release_notifies_on_newer_tag():
 
 
 def test_check_via_upstream_release_quiet_when_current_or_behind():
-    with patch.object(banner, "_upstream_release_tags", return_value=[(2026, 8, 19)]):
+    with patch.object(banner, "RELEASE_DATE", "2026.8.19"), patch.object(
+        banner, "_upstream_release_tags", return_value=[(2026, 8, 19)]
+    ):
         assert banner._check_via_upstream_release() == 0
-    with patch.object(banner, "_upstream_release_tags", return_value=[(2026, 8, 16)]):
+    with patch.object(banner, "RELEASE_DATE", "2026.8.19"), patch.object(
+        banner, "_upstream_release_tags", return_value=[(2026, 8, 16)]
+    ):
         assert banner._check_via_upstream_release() == 0
 
 
@@ -141,34 +145,41 @@ def test_local_git_official_ssh_uses_upstream_commit(tmp_path):
         commit.assert_called_once_with(tmp_path)
 
 
-def test_local_git_non_github_remote_keeps_origin_count(tmp_path):
-    """Non-GitHub remotes (local paths) keep the fetch-origin path untouched."""
+def test_local_git_non_github_remote_uses_advertised_origin_tip(tmp_path):
+    head = "a" * 40
+    target = "b" * 40
 
     def _fake_git(args, **_):
         if args == ["remote", "get-url", "origin"]:
             return "file:///tmp/fake-origin.git"
-        if args == ["rev-parse", "--is-shallow-repository"]:
-            return "false"
+        if args == ["rev-parse", "HEAD"]:
+            return head
         return None
 
+    result = SimpleNamespace(returncode=0, stdout=f"{target}\trefs/heads/main\n")
     with patch.object(banner, "_git_stdout", side_effect=_fake_git), \
-            patch.object(_sp, "run", return_value=SimpleNamespace(returncode=0, stdout="5\n")):
+            patch.object(banner, "_git_run", return_value=result), \
+            patch.object(banner, "_tips_behind", return_value=5) as behind:
         assert banner._check_via_local_git(tmp_path) == 5
+    behind.assert_called_once_with(head, target, tmp_path)
 
 
-def test_local_git_https_official_keeps_origin_count(tmp_path):
-    """HTTPS official remotes are not SSH; they keep the origin/main count."""
+def test_local_git_https_official_uses_github_tip(tmp_path):
+    head = "a" * 40
+    target = "b" * 40
 
     def _fake_git(args, **_):
         if args == ["remote", "get-url", "origin"]:
             return "https://github.com/NousResearch/hermes-agent.git"
-        if args == ["rev-parse", "--is-shallow-repository"]:
-            return "false"
+        if args == ["rev-parse", "HEAD"]:
+            return head
         return None
 
     with patch.object(banner, "_git_stdout", side_effect=_fake_git), \
-            patch.object(_sp, "run", return_value=SimpleNamespace(returncode=0, stdout="0\n")):
+            patch.object(banner, "_github_branch_tip", return_value=target), \
+            patch.object(banner, "_tips_behind", return_value=0) as behind:
         assert banner._check_via_local_git(tmp_path) == 0
+    behind.assert_called_once_with(head, target, tmp_path)
 
 
 # ---------------------------------------------------------------------------

@@ -203,7 +203,7 @@ class TestBannerUpdateCheckNonBlocking:
             banner._update_result = 3
             done.set()
             deadline = time.time() + 5
-            while not captured and time.time() < deadline:
+            while not printed and time.time() < deadline:
                 time.sleep(0.02)
         assert printed, "deferred update notice never reached prompt_toolkit's renderer"
         assert isinstance(printed[0], ANSI)
@@ -226,4 +226,4 @@ class TestBannerUpdateCheckNonBlocking:
             banner._defer_update_notice(max_wait=2.0)
             done.set()
             time.sleep(0.3)
-        assert not _cprint.called
+        assert not printed

@@ -26,7 +26,7 @@ from hermes_cli import colors
 # ---------------------------------------------------------------------------
 
 def test_render_notice_markup_produces_ansi_not_markup():
-    out = banner._render_notice_markup("[bold yellow]⚠ update[/]")
+    out = banner._render_markup_to_ansi("[bold yellow]⚠ update[/]")
     assert "\x1b[" in out
     assert "[bold" not in out and "[yellow" not in out
 
@@ -52,7 +52,7 @@ def test_deferred_notice_routes_through_cprint_not_console():
         _threading.Thread = _ImmediateThread
         with patch.object(banner, "cprint") as _cprint, \
              patch.object(banner, "_format_update_notice", return_value="[bold]3 behind[/]") as _fmt, \
-             patch.object(banner, "_render_notice_markup", return_value="\x1b[1m3 behind\x1b[0m") as _render:
+             patch.object(banner, "_render_markup_to_ansi", return_value="\x1b[1m3 behind\x1b[0m") as _render:
             banner._defer_update_notice()
 
     _cprint.assert_called_once_with("\x1b[1m3 behind\x1b[0m")
