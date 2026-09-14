@@ -18,6 +18,7 @@ import pytest
 from hermes_cli.config import load_config, save_config
 import hermes_cli.tools_config as tc
 import hermes_cli.tools_config_post_setup as post_setup
+import hermes_cli.tools_config_providers as providers
 
 
 @pytest.fixture(autouse=True)
@@ -38,8 +39,8 @@ def test_vision_custom_endpoint_survives_outer_save():
     seq = iter([2])  # "Custom OpenAI-compatible endpoint"
     prompts = iter(["https://my.endpoint/v1", "sk-secret", "my-vision-model"])
     with patch.object(tc, "_prompt_choice", side_effect=lambda *a, **k: next(seq)), \
-         patch.object(tc, "_prompt", side_effect=lambda *a, **k: next(prompts)), \
-         patch.object(tc, "save_env_value") as save_env, \
+         patch.object(providers, "_prompt", side_effect=lambda *a, **k: next(prompts)), \
+         patch.object(providers, "save_env_value") as save_env, \
          patch.object(tc, "_toolset_has_keys", return_value=False):
         # The reconfigure path hands the caller's object down to the picker.
         tc._configure_simple_requirements("vision", config_a, reconfigure=True)

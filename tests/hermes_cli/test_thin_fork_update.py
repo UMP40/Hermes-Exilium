@@ -337,12 +337,8 @@ def test_cmd_update_thin_fork_apply_path(fork_world, tmp_path, monkeypatch, caps
         hermes_main, "_get_origin_url",
         lambda *a, **k: "https://github.com/example/hermes-agent.git",
     )
-    monkeypatch.setattr(hermes_main, "_discard_lockfile_churn", lambda *a, **k: None)
     monkeypatch.setattr(update_cmd, "_discard_lockfile_churn", lambda *a, **k: None)
     monkeypatch.setattr(update_cmd, "_normalize_managed_eol", lambda *a, **k: None)
-    monkeypatch.setattr(hermes_main, "_clear_bytecode_cache", lambda *a, **k: 0)
-    monkeypatch.setattr(hermes_main, "_record_bytecode_fingerprint", lambda *a, **k: None)
-    monkeypatch.setattr(hermes_main, "_refresh_bootstrap_cache_scripts", lambda *a, **k: None)
     monkeypatch.setattr(hermes_main, "_run_pre_update_backup", lambda *a, **k: None)
     monkeypatch.setattr(hermes_main, "_pause_windows_gateways_for_update", lambda: None)
     monkeypatch.setattr(
@@ -350,12 +346,14 @@ def test_cmd_update_thin_fork_apply_path(fork_world, tmp_path, monkeypatch, caps
     )
     monkeypatch.setattr(hermes_main, "_capture_active_lazy_features", lambda: [])
     monkeypatch.setattr(hermes_main, "_capture_active_tool_dependencies", lambda: [])
+    monkeypatch.setattr(update_cmd, "_begin_update_receipt_and_plan", lambda *a, **k: object())
+    monkeypatch.setattr(update_cmd, "_record_update_step", lambda *a, **k: None)
     # The sandbox checkout has no scripts/run_tests.sh — stub the gate (the
     # gate itself is covered by the unit tests above).
     monkeypatch.setattr(update_cmd, "_run_thin_fork_regression_tests", lambda *a, **k: True)
     monkeypatch.setattr(
-        hermes_main,
-        "_abort_dependency_sync_if_self_locked",
+        update_cmd,
+        "_apply_pulled_update",
         lambda *a, **k: (_ for _ in ()).throw(_StopFlow()),
     )
 
