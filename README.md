@@ -33,6 +33,7 @@
 - **会话归档 CLI 单向门**：`hermes sessions archive` 原本只能归档、无法列出或恢复，归档会话对 CLI 用户不可达。新增 `list`/`browse` 的 `--archived`（仅归档，含 archived+hidden 以保证恢复入口）与 `--all`（归档与活跃并列表），以及 `unarchive <id-or-prefix>`（压缩链整体翻转恢复）；`browse` 归档行标记 `arch`。
 - **会话 ID 前缀说明补全**：`sessions delete`/`rename` 的帮助文本补注"接受唯一 ID 前缀"，与原有代码实现保持一致，现与 `unarchive`/`pin`/`unpin`/`export` 的既有说明格式相同。
 - **PM 运行环境的镜像兼容**：独立 PM 运行环境直接消费提交的带哈希锁文件，避免镜像 URL 改写触发 `--locked` 假性过期。若应用依赖解析报 `has no publish time`，镜像缺少发布时间元数据；临时指定 `PIP_INDEX_URL=https://pypi.org/simple` 再安装，不要放宽整个依赖图的发布时间窗口。
+- **Windows 网关依赖路径**：更新从旧版 checkout 内 `venv` 切换到 PM 管理环境后，冷启动网关不再继承旧 `PYTHONPATH`；改用已提交的 PM 依赖环境，避免旧 ABI 的 `pydantic_core` 在子任务中导入失败。
 
 ### 安装
 
