@@ -720,6 +720,8 @@ stage_gateway() {
 }
 
 stage_complete() {
+    "$INSTALL_DIR/.hermes/bin/hermes" config set updates.branch "$BRANCH" \
+        || fail "could not pin updates.branch to $BRANCH"
     local commit
     commit="$INSTALL_COMMIT"
     [ -n "$commit" ] || commit=$(git -C "$INSTALL_DIR" rev-parse HEAD 2>/dev/null) || commit=""

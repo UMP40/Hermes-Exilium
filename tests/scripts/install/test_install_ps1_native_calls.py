@@ -55,7 +55,7 @@ def _git(repo: Path, *args: str) -> str:
 def _stage(origin: Path, home: Path, *extra: str) -> tuple[subprocess.CompletedProcess, dict]:
     env = dict(os.environ, HERMES_REPO_URL=str(origin), HERMES_HOME=str(home))
     result = subprocess.run([_powershell(), "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(INSTALLER),
-                             "-Stage", "repository", "-Json", *extra],
+                             "-Stage", "repository", "-Json", "-Branch", "main", *extra],
                             env=env, capture_output=True, text=True, timeout=180)
     frames = [json.loads(line) for line in result.stdout.splitlines() if line.startswith("{")]
     assert len(frames) == 1, result.stdout + result.stderr

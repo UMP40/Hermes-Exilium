@@ -1115,6 +1115,7 @@ function Confirm-DesktopArtifact {
 }
 
 function Stage-Complete {
+    Invoke-InstalledHermes @('config', 'set', 'updates.branch', $Branch)
     $commit = $Commit
     if (-not $commit) {
         if (-not (Ensure-Git)) { Fail "no pinned Git artifact for this Windows architecture" }

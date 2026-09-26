@@ -661,16 +661,6 @@ def _tip_shas(git_cmd, target_ref: str, cwd=None) -> tuple[str, str]:
     )
 
 
-def _recover_shallow_update_count(
-    git_cmd, cwd, commit_count: int, target_ref: str
-) -> int:
-    """Recover a shallow graph's real behind count against the selected target."""
-    if commit_count <= 0 or not _is_shallow_checkout(git_cmd, cwd):
-        return commit_count
-    from hermes_cli.banner import _github_compare_behind
-
-    counted = _github_compare_behind(*_tip_shas(git_cmd, target_ref, cwd))
-    return counted if counted is not None else -1
 
 
 def _print_update_check_result(behind: int | None, compare_branch: str) -> None:
@@ -844,18 +834,31 @@ def _run_thin_fork_regression_tests(git_cmd, cwd, test_runner=None) -> bool:
         )
         return True
     runner = test_runner or [str(cwd / "scripts" / "run_tests.sh")]
+    if test_runner is None and os.name == "nt":
+        git_path = shutil.which(git_cmd[0])
+        git_root = Path(git_path).resolve().parent.parent if git_path else None
+        bash = next(
+            (path for path in (
+                git_root / "bin" / "bash.exe", git_root / "usr" / "bin" / "bash.exe"
+            ) if path.is_file()),
+            None,
+        ) if git_root else None
+        if bash is None:
+            print("  ✗ Git Bash not found; fork regression tests cannot run on Windows.")
+            return False
+        runner = [str(bash), *runner]
     print(f"  → Running fork regression tests ({len(files)} file(s))...")
-    result = subprocess.run(
-        runner + files,
-        cwd=cwd,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-    )
+    try:
+        result = subprocess.run(
+            runner + files, cwd=cwd, capture_output=True, text=True,
+            encoding="utf-8", errors="replace",
+        )
+    except OSError as exc:
+        print(f"  ✗ Could not launch fork regression tests: {exc}")
+        return False
     if result.returncode != 0:
         print("  ✗ Fork regression tests FAILED:")
-        for line in result.stdout.splitlines()[-15:] if result.stdout else ():
+        for line in (result.stdout + result.stderr).splitlines()[-15:]:
             print(f"    {line}")
         return False
     print("  ✓ Fork regression tests passed")
@@ -1385,6 +1388,29 @@ def _begin_update_receipt_and_plan(args):
             print(f"→ Fleet: {_n} running service(s) across profiles: {_profiles}")
 
     return _pre_update_plan
+
+def _source_completion_request(opts, plan, snapshot_id, windows_resume, desktop, gateway_mode) -> dict:
+    """Carry the pre-swap identity and fleet state into the fresh checkout."""
+    from copy import deepcopy
+
+    receipt = _completion_receipt._current.get()
+    if receipt is None:
+        print("✗ Could not start an update receipt; refusing to change the checkout.")
+        sys.exit(1)
+    return {
+        "source": str(_m().PROJECT_ROOT),
+        "home": str(get_hermes_home()),
+        "receipt": deepcopy(receipt.data),
+        "plan": plan.to_dict() if plan is not None else None,
+        "sibling_snapshots": deepcopy(_completion_config._LAST_SIBLING_SNAPSHOTS),
+        "snapshot_id": snapshot_id,
+        "windows_resume": windows_resume,
+        "desktop": desktop,
+        "assume_yes": opts.assume_yes,
+        "gateway_mode": gateway_mode,
+        "no_gateway_restart": opts.no_gateway_restart,
+        "pre_update_version": opts.pre_update_version,
+    }
 
 
 def _prepare_git_command() -> tuple[bool, list, bool]:

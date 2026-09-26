@@ -7,6 +7,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import subprocess
 import time
 from dataclasses import dataclass
@@ -21,6 +22,8 @@ from hermes_cli.source_releases import OFFICIAL_REPOSITORY, _GITHUB_ORIGIN, reso
 
 logger = logging.getLogger(__name__)
 UPDATE_AVAILABLE_NO_COUNT = -1
+UPDATE_RELEASE_AVAILABLE = -2
+_CALENDAR_TAG = re.compile(r"^v(\d{4})\.(\d{1,2})\.(\d{1,2})$")
 _UPDATE_CHECK_CACHE_SECONDS = 24 * 3600
 _UPDATE_CHECK_FAILURE_CACHE_SECONDS = 3600
 
@@ -303,17 +306,59 @@ def _heal_deleted_branch(branch_config_path: Path, desktop_config: dict) -> None
         atomic_json_write(branch_config_path, {**desktop_config, "branch": "main"})
 
 
-def _behind_count(co: _Checkout, target: str) -> tuple[int, list[dict]]:
+def _behind_count(co: _Checkout, target: str, repository: str | None = None) -> tuple[int, list[dict]]:
     """``(behind, commits)`` for ``target``: local ancestry first, then the GitHub compare API."""
     if co.head == target or (not co.embedded and _git_ok(
             ["merge-base", "--is-ancestor", target, co.head], cwd=co.root, git=co.git)):
         return 0, []
-    if co.repository:
-        payload = _github_compare(co.head, target, co.repository)
+    repository = repository or co.repository
+    if repository:
+        payload = _github_compare(co.head, target, repository)
         ahead = (payload or {}).get("ahead_by")
         if isinstance(ahead, int) and not isinstance(ahead, bool) and ahead >= 0:
             return ahead, (_quiet(lambda: _commits(payload), []) if ahead else [])
     return UPDATE_AVAILABLE_NO_COUNT, []
+
+
+def _fork_notify_mode(config: dict) -> str:
+    raw = (config.get("updates") or {}).get("notify", "release")
+    mode = "off" if raw is False else raw
+    return mode if isinstance(mode, str) and mode in {"release", "commit", "off"} else "release"
+
+
+def _check_fork_release(result: dict, co: _Checkout) -> None:
+    """Compare official calendar tags to the installed release without a fetch."""
+    from hermes_cli import __release_date__
+
+    local = _CALENDAR_TAG.fullmatch(f"v{__release_date__}")
+    tags = _git_run(["ls-remote", "--tags", f"https://github.com/{OFFICIAL_REPOSITORY}.git"],
+                    cwd=co.root, git=co.git, timeout=10)
+    if local is None or tags is None or tags.returncode != 0:
+        result.update(error="release-unavailable", message="Could not compare official release tags.")
+        return
+    latest = max(
+        (tuple(map(int, match.groups())) for line in tags.stdout.splitlines()
+         if not line.endswith("^{}")
+         if (match := _CALENDAR_TAG.fullmatch(line.rsplit("refs/tags/", 1)[-1]))),
+        default=None,
+    )
+    if latest is None:
+        result.update(error="release-unavailable", message="No official calendar release tags found.")
+        return
+    available = latest > tuple(map(int, local.groups()))
+    result.update(behind=UPDATE_RELEASE_AVAILABLE if available else 0, updateAvailable=available)
+
+
+def _check_fork_commit(result: dict, co: _Checkout) -> None:
+    """Compare the fork's checkout to the official main, not its stale mirror."""
+    target, _, failure = _branch_tip(
+        OFFICIAL_REPOSITORY, "main", co.root, co.git,
+        f"https://github.com/{OFFICIAL_REPOSITORY}.git")
+    if target is None:
+        result.update(error="fetch-failed", message=f"Could not resolve official main: {failure}")
+        return
+    behind, commits = _behind_count(co, target, OFFICIAL_REPOSITORY)
+    result.update(targetSha=target, behind=behind, commits=commits, updateAvailable=behind != 0)
 
 
 def _check_branch(result: dict, co: _Checkout, selected_branch: str, *,
@@ -368,13 +413,23 @@ def check_for_updates(*, install_root: Path | None = None, home: Path | None = N
     desktop_config = _read_json(branch_config_path) if branch_config_path else None
     configured_branch = _configured_branch(desktop_config)
     selected_branch = branch or configured_branch or _checked_out_branch(co.current_branch, "main")
+    fork_notice = (
+        passive and branch is None and selected_branch == "custom"
+        and co.repository is not None
+        and co.repository.lower() != OFFICIAL_REPOSITORY.lower()
+        and channel == "main"
+    )
+    notify_mode = _fork_notify_mode(config) if fork_notice else None
+    if notify_mode == "off":
+        return {**result, "reason": "disabled"}
     result.update(supported=True, currentSha=co.head, currentBranch=co.current_branch, dirty=co.dirty)
     if channel != "main":
         result["channel"] = channel
     else:
         result["branch"] = selected_branch
     identity = {"root": str(root), "home": str(home), "head": co.head, "origin": co.origin, "branch": selected_branch,
-                "channel": channel, "embedded": embedded, "branchOverride": branch is not None, "channelProtocol": 1}
+                "channel": channel, "embedded": embedded, "branchOverride": branch is not None,
+                "notify": notify_mode, "channelProtocol": 1}
     cache_file = Path(cache_path) if cache_path is not None else home / "source-checks" / f"{install_id(root)}.json"
     now = time.time()
     cached = None if force else _cached_status(cache_file, identity, now)
@@ -384,16 +439,22 @@ def check_for_updates(*, install_root: Path | None = None, home: Path | None = N
     source_target = None
     if not _is_full_sha(co.head):
         result.update(error="head-unavailable", message="Could not read the installed revision.")
-    elif branch is None:
-        source_target = _resolve_channel(result, channel, co)
-        if source_target is not None and not source_target.commit:
-            # The record supplies a default, not permission to leave the user's branch.
-            selected_branch = configured_branch or _checked_out_branch(co.current_branch, source_target.branch)
-    if "error" not in result and (source_target is None or source_target.branch is not None):
-        # Only a Desktop-configured branch the caller did not override is healed.
-        heal = branch_config_path and not branch and configured_branch == selected_branch
-        _check_branch(result, co, selected_branch,
-                      heal=(branch_config_path, desktop_config) if heal else None)
+    elif fork_notice:
+        if notify_mode == "release":
+            _check_fork_release(result, co)
+        else:
+            _check_fork_commit(result, co)
+    else:
+        if branch is None:
+            source_target = _resolve_channel(result, channel, co)
+            if source_target is not None and not source_target.commit:
+                # The record supplies a default, not permission to leave the user's branch.
+                selected_branch = configured_branch or _checked_out_branch(co.current_branch, source_target.branch)
+        if "error" not in result and (source_target is None or source_target.branch is not None):
+            # Only a Desktop-configured branch the caller did not override is healed.
+            heal = branch_config_path and not branch and configured_branch == selected_branch
+            _check_branch(result, co, selected_branch,
+                          heal=(branch_config_path, desktop_config) if heal else None)
     _write_cache(cache_file, identity, now, result)
     return result
 
