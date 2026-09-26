@@ -37,7 +37,10 @@ def stage_runtime(uv: Path, python: Path, destination: Path, *,
             shutil.copyfile(project / name, snapshot / name)
         environment.create()
         if wheelhouse is None:
-            environment.sync(snapshot, locked=True, no_default_groups=True,
+            # A user index mirror rewrites lock source URLs during --locked
+            # resolution even when every pinned version is unchanged. Consume
+            # the committed, hash-pinned PM runtime lock without re-resolving it.
+            environment.sync(snapshot, frozen=True, no_default_groups=True,
                              no_install_project=True, timeout=600)
         else:
             environment.install_wheelhouse(snapshot, wheelhouse, timeout=600)

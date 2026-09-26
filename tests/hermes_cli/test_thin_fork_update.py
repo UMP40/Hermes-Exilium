@@ -344,9 +344,8 @@ def test_cmd_update_thin_fork_apply_path(fork_world, tmp_path, monkeypatch, caps
     monkeypatch.setattr(
         hermes_main, "_resume_windows_gateways_after_update", lambda *a, **k: None
     )
-    monkeypatch.setattr(hermes_main, "_capture_active_lazy_features", lambda: [])
-    monkeypatch.setattr(hermes_main, "_capture_active_tool_dependencies", lambda: [])
-    monkeypatch.setattr(update_cmd, "_begin_update_receipt_and_plan", lambda *a, **k: object())
+    from hermes_cli.update_receipt import begin_update_receipt
+    monkeypatch.setattr(update_cmd, "_begin_update_receipt_and_plan", lambda *a, **k: begin_update_receipt())
     monkeypatch.setattr(update_cmd, "_record_update_step", lambda *a, **k: None)
     # The sandbox checkout has no scripts/run_tests.sh — stub the gate (the
     # gate itself is covered by the unit tests above).

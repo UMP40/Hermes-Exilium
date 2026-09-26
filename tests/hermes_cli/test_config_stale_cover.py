@@ -10,7 +10,6 @@ asserting the sub-flow's writes survived. This catches the overwrite that
 single-function "it saved" assertions miss.
 """
 
-from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -90,7 +89,7 @@ def test_langfuse_enable_survives_outer_save():
     caller's config; the enclosing save must not wipe it."""
     config_a = load_config()
 
-    with patch.object(post_setup, "_pip_install", return_value=SimpleNamespace(returncode=0)), \
+    with patch("pm.sync_venv"), \
          patch.object(post_setup, "_print_success"), \
          patch.object(post_setup, "_print_info"), \
          patch.object(post_setup, "_print_warning"):
@@ -109,7 +108,7 @@ def test_langfuse_already_enabled_stays_single_entry():
     config_a.setdefault("plugins", {})["enabled"] = ["observability/langfuse"]
     save_config(config_a)
 
-    with patch.object(post_setup, "_pip_install", return_value=SimpleNamespace(returncode=0)), \
+    with patch("pm.sync_venv"), \
          patch.object(post_setup, "_print_success"), \
          patch.object(post_setup, "_print_info"), \
          patch.object(post_setup, "_print_warning"):
