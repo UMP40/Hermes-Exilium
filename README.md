@@ -34,6 +34,7 @@
 - **会话 ID 前缀说明补全**：`sessions delete`/`rename` 的帮助文本补注"接受唯一 ID 前缀"，与原有代码实现保持一致，现与 `unarchive`/`pin`/`unpin`/`export` 的既有说明格式相同。
 - **PM 运行环境的镜像兼容**：独立 PM 运行环境直接消费提交的带哈希锁文件，避免镜像 URL 改写触发 `--locked` 假性过期。若应用依赖解析报 `has no publish time`，镜像缺少发布时间元数据；临时指定 `PIP_INDEX_URL=https://pypi.org/simple` 再安装，不要放宽整个依赖图的发布时间窗口。
 - **Windows 网关依赖路径**：更新从旧版 checkout 内 `venv` 切换到 PM 管理环境后，冷启动网关不再继承旧 `PYTHONPATH`；改用已提交的 PM 依赖环境，避免旧 ABI 的 `pydantic_core` 在子任务中导入失败。
+- **Windows 网关更新后验活**：识别安装器的 `python -I -c` 内联启动器实际执行的 `gateway run`，同时排除只携带未来网关命令的重启 watcher；更新后不再把运行中的网关误判为离线。
 
 ### 安装
 

@@ -86,6 +86,20 @@ INLINE_SOURCE_REJECT = [
 ]
 
 
+INSTALLED_BOOTSTRAP = (
+    'python.exe -I -c "import os, sys, runpy; os.environ.pop(\'PYTHONHOME\', None); '
+    'os.environ.pop(\'PYTHONPATH\', None); import hermes_bootstrap; '
+    "runpy.run_module('hermes_cli.main', run_name='__main__', alter_sys=True)\""
+)
+
+
+def test_installed_inline_bootstrap_is_live_gateway_not_a_watcher():
+    assert matches(INSTALLED_BOOTSTRAP + " gateway run --replace")
+    assert matches_runtime(INSTALLED_BOOTSTRAP + " gateway run --replace")
+    assert not matches(INSTALLED_BOOTSTRAP + " gateway status")
+    assert not matches(INSTALLED_BOOTSTRAP + " update --yes")
+
+
 # Real gateways whose interpreter carries operand-taking options must STILL be recognised — the
 # value-aware walk must not over-reject. Mirror image of INLINE_SOURCE_REJECT.
 INTERPRETER_OPTION_ACCEPT = [

@@ -606,11 +606,24 @@ def _gateway_command_subcommand(command: str | None) -> str | None:
     if not tokens:
         return None
     basenames = [t.rsplit("/", 1)[-1] for t in tokens]
-    # ``python -c <src> … -m hermes_cli.main gateway run``: the trailing argv belongs to the program
-    # the inline source will spawn later, not to this process (#107002). Case-preserving tokens:
-    # the operand-taking ``-X``/``-W``/``-Q`` must not be conflated with ``-q``/``-b``.
-    if command_line_runs_inline_source(cased_tokens):
-        return None
+    # The installed ``hermes`` launcher runs the CLI *in this process* through
+    # ``python -I -c "...; import hermes_bootstrap; runpy.run_module(...)"``.
+    # Unlike a restart watcher, its trailing argv is the live CLI's own argv.
+    # Recognize only that exact bootstrap shape; arbitrary inline Python may
+    # merely carry a future gateway command as data.
+    inline_index = inline_source_flag_index(cased_tokens)
+    if inline_index is not None:
+        source = cased_tokens[inline_index + 1] if inline_index + 1 < len(cased_tokens) else ""
+        if not (
+            source.startswith("import os, sys, runpy;")
+            and source.endswith(
+                "import hermes_bootstrap; runpy.run_module('hermes_cli.main', run_name='__main__', alter_sys=True)"
+            )
+        ):
+            return None
+        cased_tokens = ["hermes", *cased_tokens[inline_index + 2:]]
+        tokens = [t.lower() for t in cased_tokens]
+        basenames = [t.rsplit("/", 1)[-1] for t in tokens]
     # The launchd job's osascript wrapper (gateway_launchd.launchd_program_arguments) carries the gateway argv
     # inside one AppleScript string; the gateway itself is its child and is matched on its own command line.
     if basenames[0] == "osascript":
