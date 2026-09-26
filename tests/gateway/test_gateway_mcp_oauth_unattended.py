@@ -23,6 +23,30 @@ async def test_gateway_startup_discovery_suppresses_interactive_oauth(monkeypatc
     assert seen == [False]
 
 
+@pytest.mark.platforms("windows")
+def test_gateway_mcp_discovery_keeps_committed_pm_dependencies(monkeypatch, tmp_path: Path):
+    import gateway.run as gateway_run
+    from pm import environments
+
+    project = tmp_path / "checkout"
+    old_site = project / "venv" / "Lib" / "site-packages"
+    old_site.mkdir(parents=True)
+    selected = tmp_path / "committed"
+    selected_site = selected / "Lib" / "site-packages"
+    selected_site.mkdir(parents=True)
+    monkeypatch.setattr(gateway_run, "__file__", str(project / "gateway" / "run.py"))
+    monkeypatch.setattr(environments, "committed_venv", lambda root: selected if root == project else None)
+    monkeypatch.setattr(gateway_run.sys, "path", [str(project), str(selected_site)])
+    monkeypatch.setenv("VIRTUAL_ENV", str(project / "venv"))
+    monkeypatch.setenv("PYTHONPATH", str(project) + gateway_run.os.pathsep + str(selected_site))
+
+    gateway_run._ensure_windows_gateway_venv_imports()
+
+    assert str(old_site) not in gateway_run.sys.path
+    assert gateway_run.sys.path[1] == str(selected_site)
+    assert str(old_site) not in gateway_run.os.environ["PYTHONPATH"]
+
+
 def test_mcp_config_reconciler_reconciles_every_tick_after_baseline(monkeypatch, tmp_path: Path):
     """The chore reconciles on DRIFT, not only on a config edit (#112445): a server whose FIRST
     connect failed never reached ``_servers`` and its config never changes, so a signature-gated
