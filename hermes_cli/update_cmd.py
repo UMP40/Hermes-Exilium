@@ -1398,6 +1398,7 @@ def _source_completion_request(opts, plan, snapshot_id, windows_resume, desktop,
         print("✗ Could not start an update receipt; refusing to change the checkout.")
         sys.exit(1)
     return {
+        "schema": 1,
         "source": str(_m().PROJECT_ROOT),
         "home": str(get_hermes_home()),
         "receipt": deepcopy(receipt.data),
