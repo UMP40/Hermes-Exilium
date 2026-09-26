@@ -150,6 +150,27 @@ def test_build_gateway_argv_keeps_venv_console_python_for_uv_venv(monkeypatch, t
 
 
 @pytest.mark.platforms("windows")
+def test_gateway_launch_excludes_stale_legacy_site_packages(monkeypatch, tmp_path):
+    from pm import environments
+
+    project = tmp_path / "checkout"
+    selected = tmp_path / "selected"
+    selected_site = selected / "Lib" / "site-packages"
+    selected_site.mkdir(parents=True)
+    old_site = tmp_path / "legacy" / "Lib" / "site-packages"
+    old_site.mkdir(parents=True)
+    monkeypatch.setenv("PYTHONPATH", str(old_site))
+    monkeypatch.setattr(environments, "committed_venv", lambda root: selected)
+
+    overlay = {}
+    gateway_windows._prepend_pythonpath(overlay, [str(project)])
+    paths = overlay["PYTHONPATH"].split(os.pathsep)
+    assert str(project) in paths
+    assert str(selected_site) in paths
+    assert str(old_site) not in paths
+
+
+@pytest.mark.platforms("windows")
 def test_spawn_detached_marks_primary_breakaway_success(monkeypatch, tmp_path, caplog):
     """A successful breakaway spawn reports true without a warning."""
     argv = ["python.exe", "-m", "hermes_cli.main", "gateway", "run"]

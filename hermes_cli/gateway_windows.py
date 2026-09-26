@@ -650,8 +650,15 @@ def _prepend_pythonpath(env_overlay: dict[str, str], entries: list[str]) -> None
     clean_entries = [entry for entry in entries if entry]
     if not clean_entries:
         return
-    existing = os.environ.get("PYTHONPATH", "")
-    if existing:
+    # A gateway launched while the source checkout switches from its legacy
+    # in-tree venv to PM may inherit PYTHONPATH pointing at the OLD wheel ABI.
+    # Use the committed dependency generation, not that ambient path.
+    from pm.environments import committed_venv, site_packages
+
+    selected = committed_venv(Path(clean_entries[0]))
+    if selected is not None:
+        clean_entries.append(str(site_packages(selected)))
+    elif existing := os.environ.get("PYTHONPATH"):
         clean_entries.append(existing)
     env_overlay["PYTHONPATH"] = os.pathsep.join(clean_entries)
 
