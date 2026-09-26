@@ -422,11 +422,19 @@ _GATEWAY_ENDPOINT_UNREACHABLE_RE = re.compile(
 def _ensure_windows_gateway_venv_imports() -> None:
     """Make detached Windows gateway runs see the Hermes venv packages.
 
-    Patched before MCP discovery so tool injection does not depend on launchers preserving PYTHONPATH."""
+    PM activates a committed dependency generation at process boot. Never put
+    the pre-PM in-tree venv ahead of it: compiled wheels may target another ABI.
+    Without a committed generation, retain the legacy launcher behavior for
+    venv-based installations.
+    """
     if sys.platform != "win32":
         return
 
     project_root = Path(__file__).resolve().parent.parent
+    from pm.environments import committed_venv
+
+    if committed_venv(project_root) is not None:
+        return
     candidates: list[Path] = []
     if os.environ.get("VIRTUAL_ENV"):
         candidates.append(Path(os.environ["VIRTUAL_ENV"]))
