@@ -16,7 +16,7 @@
 ### 更新机制
 
 - **可配置的更新分支**：新增 `updates.branch` 配置项，可将默认更新目标从 `main` 改为任意分支（本 fork 使用 `custom`）。
-- **薄 fork 更新工作流**：检测到上游前进时，`hermes update` 自动执行：同步 `main` 镜像到 `upstream/main` 并推送 → 将 `custom` rebase 到新 `main` → 运行本 fork 的回归测试（fork 新增的 `tests/` 文件）→ 测试通过才 force-push 两分支。rebase 冲突会干净中止（`custom` 不动），测试失败则阻断推送。
+- **薄 fork 更新工作流**：检测到上游前进时，`hermes update` 同步并推送 `main` 镜像 → 将 `custom` rebase 到新 `main` → 运行 fork 新增的回归测试 → 测试通过后通过 lease 推送 `custom`。冲突时自动中止 rebase，`custom` 和远端部署分支保持原状；`main` 镜像可能已前进，维护者需手动解决冲突。
 - **镜像推送 lease 修复**：修复 single-branch clone 下 `main` 镜像推送因 `--force-with-lease` 基准错误被永久拒绝的问题。
 
 ### 启动提示
@@ -32,6 +32,7 @@
 - **ANSI 颜色渲染**：更新提示改经 prompt_toolkit 渲染器输出（修复被 `patch_stdout` 吞掉转义字符产生的 `?[33m` 乱码）；stderr 警告（配置问题、`.env` 弃用项、xAI 模型退役）改为条件上色——仅在 stderr 本身是 TTY 时输出颜色，重定向/日志不再泄漏裸转义序列。
 - **会话归档 CLI 单向门**：`hermes sessions archive` 原本只能归档、无法列出或恢复，归档会话对 CLI 用户不可达。新增 `list`/`browse` 的 `--archived`（仅归档，含 archived+hidden 以保证恢复入口）与 `--all`（归档与活跃并列表），以及 `unarchive <id-or-prefix>`（压缩链整体翻转恢复）；`browse` 归档行标记 `arch`。
 - **会话 ID 前缀说明补全**：`sessions delete`/`rename` 的帮助文本补注"接受唯一 ID 前缀"，与原有代码实现保持一致，现与 `unarchive`/`pin`/`unpin`/`export` 的既有说明格式相同。
+- **PM 运行环境的镜像兼容**：独立 PM 运行环境直接消费提交的带哈希锁文件，避免镜像 URL 改写触发 `--locked` 假性过期。若应用依赖解析报 `has no publish time`，镜像缺少发布时间元数据；临时指定 `PIP_INDEX_URL=https://pypi.org/simple` 再安装，不要放宽整个依赖图的发布时间窗口。
 
 ### 安装
 
@@ -55,8 +56,8 @@ git fetch origin custom
 # 3. 切到部署分支
 git checkout -B custom origin/custom
 
-# 4. 依赖如有变化则同步（Windows venv 内可用 .\venv\Scripts\pip.exe）
-pip install -e '.[all]'
+# 4. 依赖如有变化，使用 Hermes 包管理器同步
+hermes pm install
 
 # 5. 更新目标固定为 custom
 hermes config set updates.branch custom
@@ -93,7 +94,7 @@ git merge --ff-only origin/custom
 
 `hermes update` 在薄 fork 模式下 rebase 失败（与上游冲突）时会**干净中止**：自动 `git rebase --abort`、本地 `custom` 保持原基线不动、不推送任何内容，仅 `main` 镜像被推进到新上游（无害，设计如此）。此后每次重跑 `hermes update` 都会撞同一个冲突——不会自愈，必须等维护者解决并发布新 `custom` 后，在下游执行一次性对齐：
 
-**维护者侧（解决冲突并发布，通常已完成）**：在开发机上 `git rebase main` 手动解决冲突 → 跑 fork 回归测试 → `git push --force-with-lease origin custom`。
+**维护者侧（解决冲突并发布）**：在开发机保留旧部署分支备份，执行失败提示中的 `git rebase --onto main <旧 main SHA> custom`，逐项解决冲突；运行 fork 回归测试。通过后由更新工作流以 lease 推送 `custom`，不要手工强制推送。
 
 **下游侧（对齐被重写的历史）**：
 
@@ -114,7 +115,7 @@ git fetch origin custom
 git reset --hard origin/custom
 
 # 5. 依赖同步（上游跨度大时必须）
-pip install -e '.[all]'
+hermes pm install
 
 # 6. 重启常驻进程
 hermes gateway restart
@@ -139,8 +140,8 @@ git branch -f main upstream/main
 git fetch origin custom
 git reset --hard origin/custom
 
-# 5. 依赖同步（与 POSIX 相同；venv 内用 .\venv\Scripts\pip.exe）
-pip install -e ".[all]"
+# 5. 依赖同步（与 POSIX 相同）
+hermes pm install
 
 # 6. 重启常驻进程（与 POSIX 相同）
 hermes gateway restart
