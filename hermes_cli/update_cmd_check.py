@@ -146,19 +146,23 @@ def _fetch(git_cmd: list[str], root: Path, depth_args: list[str], remote: str, b
         **_uc()._no_prompt_git_kwargs())
 
 
-def fetch_compare_branch(git_cmd: list[str], root: Path, branch: str, depth_args: list[str]):
+def fetch_compare_branch(git_cmd: list[str], root: Path, branch: str, depth_args: list[str], *,
+                         remote: str = "origin"):
     """Fetch only ``branch`` and return ``(fetch_result, compare_ref)``.
 
     A bare ``git fetch <remote>`` pulls every ref, and this repo has thousands of auto-generated
     branches. ``main`` prefers upstream as the canonical reference; other branches go straight
-    to origin, because a fork's branch usually has no upstream counterpart.
+    to origin, because a fork's branch usually has no upstream counterpart. ``remote="upstream"``
+    says so outright: a thin fork's deploy branch is compared against the upstream mirror it is
+    rebased onto, whatever its own name and ``main`` look like.
     """
-    if branch == "main":
+    if remote == "upstream" or (
+        branch == "main" and _git(git_cmd, root, ["remote", "get-url", "upstream"]).returncode == 0
+    ):
         # A local probe (~6 ms) spares non-fork installs a failed network fetch (~0.3-1 s).
-        if _git(git_cmd, root, ["remote", "get-url", "upstream"]).returncode == 0:
-            fetch_result = _fetch(git_cmd, root, depth_args, "upstream", branch)
-            if fetch_result.returncode == 0:
-                return fetch_result, f"upstream/{branch}"
+        fetch_result = _fetch(git_cmd, root, depth_args, "upstream", branch)
+        if fetch_result.returncode == 0:
+            return fetch_result, f"upstream/{branch}"
     from hermes_cli.gitlock import fetch_with_partial_clone_recovery
     # Marking the unmarked packs clears the git 2.53+ partial-clone pack-objects crash (#124272).
     print("→ Fetching from origin...")
@@ -212,6 +216,25 @@ def report_shallow_verdict(git_cmd: list[str], root: Path, compare_branch: str) 
         print(f"⚕ Update available: {counted} {commits_word} behind {compare_branch}.")
     else:
         print(f"⚕ Update available (behind {compare_branch}).")
+    print(f"  Run '{recommended_update_command()}' to install.")
+
+
+def report_thin_fork_verdict(git_cmd: list[str], root: Path, compare_branch: str) -> None:
+    """Report a shallow thin fork's verdict by ancestry: does the deploy branch contain the mirror tip?
+
+    ``report_shallow_verdict`` asks the GitHub compare API, which only knows the official
+    repository: the deploy branch's own commits are not in it, so it can neither count nor prove
+    up-to-dateness there, and an unknown count must not be reported as an update. Ancestry is
+    decidable locally: the mirror tip a rebase landed on is an ancestor of the deploy branch, and a
+    freshly fetched one is a graft boundary no rebased commit contains yet.
+    """
+    from hermes_cli.config import recommended_update_command
+
+    contained = _git(git_cmd, root, ["merge-base", "--is-ancestor", compare_branch, "HEAD"]).returncode == 0
+    if contained:
+        print("✓ Already up to date.")
+        return
+    print(f"⚕ Update available (behind {compare_branch}).")
     print(f"  Run '{recommended_update_command()}' to install.")
 
 
