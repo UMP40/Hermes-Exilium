@@ -18,6 +18,8 @@
 - **可配置的更新分支**：新增 `updates.branch` 配置项，可将默认更新目标从 `main` 改为任意分支（本 fork 使用 `custom`）。
 - **薄 fork 更新工作流**：检测到上游前进时，`hermes update` 同步并推送 `main` 镜像 → 将 `custom` rebase 到新 `main` → 运行 fork 新增的回归测试 → 测试通过后通过 lease 推送 `custom`。冲突时自动中止 rebase，`custom` 和远端部署分支保持原状；`main` 镜像可能已前进，维护者需手动解决冲突。
 - **镜像推送 lease 修复**：修复 single-branch clone 下 `main` 镜像推送因 `--force-with-lease` 基准错误被永久拒绝的问题。
+- **事务式更新兼容**：默认渠道不会绕过 `updates.branch: custom`；重放后按包含官方基线校验 fork 提交，保留官方更新锁、回滚和服务恢复流程。手动解决 rebase 后，即使官方没有新提交，更新器仍会运行测试门、发布本地 `custom` 并完成依赖、构建和网关重启。
+- **部署目录测试隔离**：测试门在数据目录之外的临时 detached 工作树验证待发布提交，复用已有 PM 测试解释器；不会为了通过测试而关闭真实 Hermes 数据的 I/O 保护。
 
 ### 启动提示
 
