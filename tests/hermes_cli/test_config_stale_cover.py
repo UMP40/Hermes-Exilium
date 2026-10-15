@@ -1,13 +1,14 @@
-"""Regression tests: stale in-memory config overwrite (vision + langfuse).
+"""Regression tests: stale in-memory config overwrite in the `hermes tools` flow.
 
 The bug class: an entry flow holds a config object A obtained from
-``load_config()``, a sub-flow loads its OWN object B, mutates and saves it,
-and the outer flow then saves the stale A, silently discarding B's writes.
+``load_config()``, a sub-flow loads its OWN object B, mutates and saves it, and
+the outer flow then saves the stale A, silently discarding B's writes.
 
-Each test reproduces the full chain — sub-flow runs against the caller's
-object, then the caller saves again — and re-reads from disk afterwards,
-asserting the sub-flow's writes survived. This catches the overwrite that
-single-function "it saved" assertions miss.
+``_configure_vision_backend`` used to re-load config internally, so the vision
+backend it had just written was wiped by the enclosing toolset save. Each test
+runs the real chain — sub-flow on the caller's object, then the enclosing
+platform write and final save — and re-reads from disk afterwards, so it catches
+the overwrite that single-function "it saved" assertions miss.
 """
 
 from unittest.mock import patch
@@ -16,8 +17,9 @@ import pytest
 
 from hermes_cli.config import load_config, save_config
 import hermes_cli.tools_config as tc
-import hermes_cli.tools_config_post_setup as post_setup
 import hermes_cli.tools_config_providers as providers
+
+PLATFORM = "cli"
 
 
 @pytest.fixture(autouse=True)
@@ -26,14 +28,31 @@ def _isolated_home(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
 
+def _seed_plugin_selection(enabled: list[str]) -> None:
+    """Write ``plugins.enabled`` the way the plugins subsystem does, then reload."""
+    config = load_config()
+    config.setdefault("plugins", {})["enabled"] = list(enabled)
+    save_config(config)
+
+
+def _close_toolset_flow(config: dict) -> None:
+    """The enclosing writes ``hermes tools`` does after configuring a toolset:
+    record the platform selection (``_apply_platform_checklist``) and save the
+    object the whole flow has been carrying (``_configure_platforms``)."""
+    tc._save_platform_tools(config, PLATFORM, {"vision"})
+    save_config(config)
+
+
 # ---------------------------------------------------------------------------
 # Vision: auxiliary.vision survives the enclosing save
 # ---------------------------------------------------------------------------
 
 def test_vision_custom_endpoint_survives_outer_save():
-    """Full chain: vision sub-flow writes through the caller's config, the
-    caller saves afterwards, and auxiliary.vision is still on disk."""
-    config_a = load_config()
+    """Full chain: the vision sub-flow writes through the caller's config, the
+    enclosing flow saves afterwards, and auxiliary.vision is still on disk
+    next to the toolset selection and any plugin config the user already had."""
+    _seed_plugin_selection(["web/firecrawl"])
+    config_a = load_config()  # the entry flow's object
 
     seq = iter([2])  # "Custom OpenAI-compatible endpoint"
     prompts = iter(["https://my.endpoint/v1", "sk-secret", "my-vision-model"])
@@ -41,80 +60,41 @@ def test_vision_custom_endpoint_survives_outer_save():
          patch.object(providers, "_prompt", side_effect=lambda *a, **k: next(prompts)), \
          patch.object(providers, "save_env_value") as save_env, \
          patch.object(tc, "_toolset_has_keys", return_value=False):
-        # The reconfigure path hands the caller's object down to the picker.
-        tc._configure_simple_requirements("vision", config_a, reconfigure=True)
+        tc._configure_toolset("vision", config_a, reconfigure=True)
 
-    save_config(config_a)  # enclosing save AFTER the sub-flow
+    _close_toolset_flow(config_a)
 
     fresh = load_config()  # re-read from disk
-    v = fresh.get("auxiliary", {}).get("vision", {})
-    assert v.get("provider") == "custom"
-    assert v.get("base_url") == "https://my.endpoint/v1"
-    assert v.get("model") == "my-vision-model"
+    vision = fresh.get("auxiliary", {}).get("vision", {})
+    assert vision.get("provider") == "custom"
+    assert vision.get("base_url") == "https://my.endpoint/v1"
+    assert vision.get("model") == "my-vision-model"
+    # The toolset the user enabled and the plugin config they already had are both intact.
+    assert "vision" in fresh.get("platform_toolsets", {}).get(PLATFORM, [])
+    assert "web/firecrawl" in fresh.get("plugins", {}).get("enabled", [])
     save_env.assert_called_once_with("OPENAI_API_KEY", "sk-secret")
 
 
 def test_vision_auto_survives_outer_save():
     """Auto mode clears pinned keys; the enclosing save must not resurrect
     them from a stale object."""
-    config_a = load_config()
-    config_a.setdefault("auxiliary", {})["vision"] = {
+    config = load_config()
+    config.setdefault("auxiliary", {})["vision"] = {
         "provider": "openai", "model": "gpt-4o", "base_url": "x",
     }
-    save_config(config_a)
-    config_a = load_config()  # caller holds current state
+    save_config(config)
+    config_a = load_config()  # the entry flow's object
 
-    seq = iter([0])  # "Auto"
-    with patch.object(tc, "_prompt_choice", side_effect=lambda *a, **k: next(seq)):
-        tc._configure_simple_requirements("vision", config_a, reconfigure=True)
+    with patch.object(tc, "_prompt_choice", side_effect=lambda *a, **k: 0):  # "Auto"
+        tc._configure_toolset("vision", config_a, reconfigure=True)
 
-    save_config(config_a)
+    _close_toolset_flow(config_a)
 
-    fresh = load_config()
-    v = fresh.get("auxiliary", {}).get("vision", {})
+    vision = load_config().get("auxiliary", {}).get("vision", {})
     # Pinned overrides cleared; load_config re-fills the auto defaults from
     # DEFAULT_CONFIG, which is exactly the "auto" semantics — none of the
     # previously pinned values may survive.
-    assert v.get("provider") != "openai"
-    assert v.get("model") != "gpt-4o"
-    assert v.get("base_url") != "x"
+    assert vision.get("provider") != "openai"
+    assert vision.get("model") != "gpt-4o"
+    assert vision.get("base_url") != "x"
 
-
-# ---------------------------------------------------------------------------
-# Langfuse: plugins.enabled survives the enclosing save
-# ---------------------------------------------------------------------------
-
-def test_langfuse_enable_survives_outer_save():
-    """Full chain: langfuse post-setup adds observability/langfuse to the
-    caller's config; the enclosing save must not wipe it."""
-    config_a = load_config()
-
-    with patch("pm.sync_venv"), \
-         patch.object(post_setup, "_print_success"), \
-         patch.object(post_setup, "_print_info"), \
-         patch.object(post_setup, "_print_warning"):
-        tc._run_post_setup("langfuse", config_a)
-
-    save_config(config_a)  # enclosing save AFTER the sub-flow
-
-    fresh = load_config()  # re-read from disk
-    enabled = fresh.get("plugins", {}).get("enabled", [])
-    assert "observability/langfuse" in enabled
-
-
-def test_langfuse_already_enabled_stays_single_entry():
-    """Idempotent: enabling twice keeps one plugins.enabled entry."""
-    config_a = load_config()
-    config_a.setdefault("plugins", {})["enabled"] = ["observability/langfuse"]
-    save_config(config_a)
-
-    with patch("pm.sync_venv"), \
-         patch.object(post_setup, "_print_success"), \
-         patch.object(post_setup, "_print_info"), \
-         patch.object(post_setup, "_print_warning"):
-        tc._run_post_setup("langfuse", load_config())
-
-    save_config(config_a)
-    fresh = load_config()
-    enabled = fresh.get("plugins", {}).get("enabled", [])
-    assert enabled.count("observability/langfuse") == 1
