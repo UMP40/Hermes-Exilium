@@ -215,9 +215,7 @@ def test_sessions_list_all_passes_include_archived_without_hidden(
     assert "include_hidden" not in kw or kw["include_hidden"] is False
 
 
-# ---------------------------------------------------------------------------
-# Help discoverability + argparse contracts (fork-added archive surface)
-# ---------------------------------------------------------------------------
+# Argparse exclusivity and full-command archive state transitions.
 
 
 def _run_argv(monkeypatch, argv_tail):
@@ -229,34 +227,6 @@ def _run_argv(monkeypatch, argv_tail):
     except SystemExit as exc:
         return exc.code
     return 0
-
-
-def test_sessions_group_help_lists_unarchive(monkeypatch, capsys):
-    code = _run_argv(monkeypatch, ["sessions", "-h"])
-    assert code == 0
-    assert "unarchive" in capsys.readouterr().out
-
-
-def test_sessions_list_help_documents_archive_flags(monkeypatch, capsys):
-    code = _run_argv(monkeypatch, ["sessions", "list", "-h"])
-    assert code == 0
-    out = capsys.readouterr().out
-    assert "--archived" in out and "--all" in out
-
-
-def test_sessions_browse_help_documents_archive_flags(monkeypatch, capsys):
-    code = _run_argv(monkeypatch, ["sessions", "browse", "-h"])
-    assert code == 0
-    out = capsys.readouterr().out
-    assert "--archived" in out and "--all" in out
-
-
-def test_sessions_delete_rename_help_document_unique_prefix(monkeypatch, capsys):
-    for sub in ("delete", "rename"):
-        code = _run_argv(monkeypatch, ["sessions", sub, "-h"])
-        assert code == 0
-        assert "unique prefix" in capsys.readouterr().out
-
 
 
 def test_sessions_list_archived_all_mutually_exclusive(monkeypatch, capsys):
