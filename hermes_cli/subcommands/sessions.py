@@ -22,7 +22,7 @@ def cmd_sessions_lazy(args, **kwargs):
 def _add_rename_and_discard(sessions_subparsers) -> None:
     sessions_rename = sessions_subparsers.add_parser(
         "rename", help="Set or change a session's title")
-    sessions_rename.add_argument("session_id", help="Session ID to rename")
+    sessions_rename.add_argument("session_id", help="Session ID or unique prefix to rename")
     sessions_rename.add_argument("title", nargs="+", help="New title for the session")
     from hermes_cli.sessions_discard import add_discard_parser
     add_discard_parser(sessions_subparsers)
