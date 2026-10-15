@@ -65,6 +65,54 @@ def _make_runner(tmp_path: Path, name: str, exit_code: int) -> Path:
     return runner
 
 
+class _StopFlow(Exception):
+    """Raised in place of a pipeline stage that would install dependencies/restart gateways."""
+
+
+def _apply_args():
+    return SimpleNamespace(branch=None, yes=False, force=False, force_venv=False)
+
+
+def _stub_update_pipeline(monkeypatch, fork):
+    """Everything ``cmd_update`` needs outside git: the sandbox root, fork identity, no gateways."""
+    from hermes_cli import main as hermes_main
+    from hermes_cli.update_receipt import begin_update_receipt
+
+    monkeypatch.setattr(hermes_main, "PROJECT_ROOT", fork)
+    monkeypatch.setattr(hermes_main, "_resolve_update_branch", lambda args: "custom")
+    monkeypatch.setattr(hermes_main, "_is_windows", lambda: False)
+    monkeypatch.setattr(
+        hermes_main, "_get_origin_url",
+        lambda *a, **k: "https://github.com/example/hermes-agent.git",
+    )
+    monkeypatch.setattr(update_cmd, "_discard_lockfile_churn", lambda *a, **k: None)
+    monkeypatch.setattr(update_cmd, "_normalize_managed_eol", lambda *a, **k: None)
+    monkeypatch.setattr(hermes_main, "_run_pre_update_backup", lambda *a, **k: None)
+    monkeypatch.setattr(hermes_main, "_pause_windows_gateways_for_update", lambda: None)
+    monkeypatch.setattr(
+        hermes_main, "_resume_windows_gateways_after_update", lambda *a, **k: None
+    )
+    monkeypatch.setattr(update_cmd, "_begin_update_receipt_and_plan", lambda *a, **k: begin_update_receipt())
+    monkeypatch.setattr(update_cmd, "_record_update_step", lambda *a, **k: None)
+    _stub_fork_gate(monkeypatch)
+
+
+def _stop_in_apply(monkeypatch):
+    monkeypatch.setattr(
+        update_cmd,
+        "_apply_pulled_update",
+        lambda *a, **k: (_ for _ in ()).throw(_StopFlow()),
+    )
+
+
+@pytest.fixture(autouse=True)
+def _clean_commit_point():
+    """No test inherits another's run start or armed obligations (the commit point is process state)."""
+    update_cmd._commit.begin_update_attempt()
+    yield
+    update_cmd._commit.begin_update_attempt()
+
+
 @pytest.fixture
 def fork_world(tmp_path):
     """upstream bare + origin bare + a fork clone on ``custom``.
@@ -324,41 +372,13 @@ def test_cmd_update_thin_fork_apply_path(fork_world, tmp_path, monkeypatch, caps
     """
     from hermes_cli import main as hermes_main
 
-    class _StopFlow(Exception):
-        pass
-
     _advance_upstream(fork_world)
     fork = fork_world.fork
+    _stub_update_pipeline(monkeypatch, fork)
+    _stop_in_apply(monkeypatch)
 
-    monkeypatch.setattr(hermes_main, "PROJECT_ROOT", fork)
-    monkeypatch.setattr(hermes_main, "_resolve_update_branch", lambda args: "custom")
-    monkeypatch.setattr(hermes_main, "_is_windows", lambda: False)
-    monkeypatch.setattr(
-        hermes_main, "_get_origin_url",
-        lambda *a, **k: "https://github.com/example/hermes-agent.git",
-    )
-    monkeypatch.setattr(update_cmd, "_discard_lockfile_churn", lambda *a, **k: None)
-    monkeypatch.setattr(update_cmd, "_normalize_managed_eol", lambda *a, **k: None)
-    monkeypatch.setattr(hermes_main, "_run_pre_update_backup", lambda *a, **k: None)
-    monkeypatch.setattr(hermes_main, "_pause_windows_gateways_for_update", lambda: None)
-    monkeypatch.setattr(
-        hermes_main, "_resume_windows_gateways_after_update", lambda *a, **k: None
-    )
-    from hermes_cli.update_receipt import begin_update_receipt
-    monkeypatch.setattr(update_cmd, "_begin_update_receipt_and_plan", lambda *a, **k: begin_update_receipt())
-    monkeypatch.setattr(update_cmd, "_record_update_step", lambda *a, **k: None)
-    # The sandbox checkout has no scripts/run_tests.sh — stub the gate (the
-    # gate itself is covered by the unit tests above).
-    monkeypatch.setattr(update_cmd, "_run_thin_fork_regression_tests", lambda *a, **k: True)
-    monkeypatch.setattr(
-        update_cmd,
-        "_apply_pulled_update",
-        lambda *a, **k: (_ for _ in ()).throw(_StopFlow()),
-    )
-
-    args = SimpleNamespace(branch=None, yes=False, force=False, force_venv=False)
     with pytest.raises(_StopFlow):
-        hermes_main.cmd_update(args)
+        hermes_main.cmd_update(_apply_args())
 
     upstream_tip = _remote_head(fork, fork_world.upstream, "main")
     # main mirrored to upstream and pushed to the fork.
@@ -370,6 +390,174 @@ def test_cmd_update_thin_fork_apply_path(fork_world, tmp_path, monkeypatch, caps
     assert _remote_head(fork, fork_world.origin, "custom") == _head(fork)
     out = capsys.readouterr().out
     assert "Fork 'custom' synced with upstream" in out
+
+
+def test_apply_path_never_resolves_a_channel_for_the_deploy_branch(
+    fork_world, monkeypatch
+):
+    """The deploy branch stays the target: resolving the default source channel answers `main`,
+    which is this fork's pure upstream mirror, and taking it bypasses the whole workflow.
+    """
+    from hermes_cli import main as hermes_main
+    from hermes_cli import source_releases
+
+    _advance_upstream(fork_world)
+    fork = fork_world.fork
+    seen = {}
+
+    def fake_pull(git_cmd, branch, auto_stash_ref, **kwargs):
+        seen.update({"branch": branch, "auto_stash_ref": auto_stash_ref, **kwargs})
+        raise _StopFlow
+
+    _stub_update_pipeline(monkeypatch, fork)
+    monkeypatch.setattr(update_cmd, "_pull_updates", fake_pull)
+    monkeypatch.setattr(
+        source_releases, "resolve_source_target",
+        lambda *a, **k: pytest.fail("the channel resolver was consulted for the deploy branch"),
+    )
+
+    with pytest.raises(_StopFlow):
+        hermes_main.cmd_update(_apply_args())
+
+    # The pull is told to rebase and publish the deploy branch against the upstream mirror, and
+    # pins no channel commit: the landing commit is the fork's own.
+    assert seen["branch"] == "custom"
+    assert seen["target_ref"] == update_cmd._THIN_FORK_MIRROR
+    assert seen["thin_fork_mode"] is True
+    assert seen["expected_sha"] is None
+
+
+def test_apply_path_publishes_a_deploy_branch_rebased_by_hand(
+    fork_world, monkeypatch, capsys
+):
+    """Nothing upstream to replay — custom already sits on an already-advanced mirror — but the
+    fork still publishes the old commits (the live incident: a by-hand rebase never pushed). The
+    run must publish it through the same gated workflow instead of reporting "up to date".
+    """
+    from hermes_cli import main as hermes_main
+
+    _advance_upstream(fork_world)
+    fork = fork_world.fork
+    upstream_tip = _remote_head(fork, fork_world.upstream, "main")
+    old_mirror = _git(fork, "rev-parse", "main").stdout.strip()
+    stale_published = _remote_head(fork, fork_world.origin, "custom")
+    # The by-hand rebase: main advances to the fetched upstream tip and custom is replayed onto it.
+    _git(fork, "branch", "-f", "main", upstream_tip)
+    _git(fork, "rebase", "-q", "--onto", "main", old_mirror, "custom")
+    assert _head(fork) != stale_published
+
+    _stub_update_pipeline(monkeypatch, fork)
+    _stop_in_apply(monkeypatch)
+
+    with pytest.raises(_StopFlow):
+        hermes_main.cmd_update(_apply_args())
+
+    assert _remote_head(fork, fork_world.origin, "main") == upstream_tip
+    assert _remote_head(fork, fork_world.origin, "custom") == _head(fork)
+    assert _git(fork, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip() == "custom"
+    assert "Publishing this fork's 'custom' branch" in capsys.readouterr().out
+
+
+def _stub_fork_gate(monkeypatch, *, passes=True):
+    """The sandbox checkout has no ``scripts/run_tests.sh``: stub the gate (the gate itself is
+    covered by the unit tests above)."""
+    monkeypatch.setattr(update_cmd, "_run_thin_fork_regression_tests", lambda *a, **k: passes)
+
+
+def _thin_fork_pull(fork, monkeypatch):
+    """``_pull_updates`` in thin-fork mode against the sandbox fork; returns the baseline."""
+    monkeypatch.setattr(update_cmd._m(), "PROJECT_ROOT", fork)
+    update_cmd._commit.record_run_start(GIT, fork)
+    return update_cmd._pull_updates(
+        GIT, "custom", None, prompt_for_restore=False, gw_input_fn=None,
+        discard_local_changes=False, keep_stash=False, target_ref=update_cmd._THIN_FORK_MIRROR,
+        thin_fork_mode=True, _windows_gateway_resume=None)
+
+
+def test_pull_updates_arms_the_mirror_and_accepts_the_rebased_deploy_branch(
+    fork_world, monkeypatch
+):
+    """The commit point names the upstream base the rebase lands on, never the deploy branch's own
+    tip, and the landed commit is accepted for CONTAINING it — the fork has commits of its own.
+    """
+    fork = fork_world.fork
+    pre_custom = _head(fork)
+    _advance_upstream(fork_world)
+    upstream_tip = _remote_head(fork, fork_world.upstream, "main")
+    armed = {}
+    real_arm = update_cmd._commit.arm_commit_point
+
+    def spy(git_cmd, root, expected_sha, **move):
+        armed.update({"expected_sha": expected_sha, **move})
+        return real_arm(git_cmd, root, expected_sha, **move)
+
+    monkeypatch.setattr(update_cmd._commit, "arm_commit_point", spy)
+    _stub_fork_gate(monkeypatch)
+
+    baseline = _thin_fork_pull(fork, monkeypatch)
+
+    assert armed["expected_sha"] == upstream_tip
+    assert armed["target"] == upstream_tip  # the marker's recovery target, not the rebased tip
+    assert armed["pre"] == pre_custom
+    assert baseline == pre_custom
+    # The deploy branch moved onto the mirror tip: whole, published, and no marker left behind.
+    assert _head(fork) != pre_custom
+    assert _git(fork, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip() == "custom"
+    assert _git(fork, "merge-base", "--is-ancestor", "main", "custom").returncode == 0
+    assert _remote_head(fork, fork_world.origin, "custom") == _head(fork)
+    assert not update_cmd.interrupted_pull_marker(fork).exists()
+    # The post-pull check accepts that landing: it must not insist HEAD IS the upstream commit.
+    assert update_cmd._verify_head_after_pull(
+        GIT, "custom", baseline, in_place_update=False, _windows_gateway_resume=None
+    ) == _head(fork)
+
+
+def test_pull_updates_reports_no_move_when_the_deploy_branch_already_has_the_mirror(
+    fork_world, monkeypatch
+):
+    """A by-hand rebase already on the new mirror: the workflow's rebase is a no-op, so HEAD stays
+    put and the run's result is the published branch. The post-pull check must not read that as a
+    no-op update — it would refuse a deploy branch that was never behind.
+    """
+    fork = fork_world.fork
+    _advance_upstream(fork_world)
+    upstream_tip = _remote_head(fork, fork_world.upstream, "main")
+    old_mirror = _git(fork, "rev-parse", "main").stdout.strip()
+    _git(fork, "branch", "-f", "main", upstream_tip)
+    _git(fork, "rebase", "-q", "--onto", "main", old_mirror, "custom")
+    rebased = _head(fork)
+    _stub_fork_gate(monkeypatch)
+
+    baseline = _thin_fork_pull(fork, monkeypatch)
+
+    assert baseline == ""
+    assert _head(fork) == rebased
+    assert _remote_head(fork, fork_world.origin, "custom") == rebased
+    assert _remote_head(fork, fork_world.origin, "main") == upstream_tip
+    assert not update_cmd.interrupted_pull_marker(fork).exists()
+    assert update_cmd._verify_head_after_pull(
+        GIT, "custom", baseline, in_place_update=False, _windows_gateway_resume=None
+    ) == rebased
+
+
+def test_pull_updates_gate_failure_publishes_nothing(fork_world, monkeypatch):
+    """The fork's own gate refuses the publish: the fork keeps the old commits, its copy is not
+    told, and the run exits non-zero instead of reporting an update. The local rebase stands.
+    """
+    fork = fork_world.fork
+    pre_custom = _head(fork)
+    _advance_upstream(fork_world)
+    stale_published = _remote_head(fork, fork_world.origin, "custom")
+    _stub_fork_gate(monkeypatch, passes=False)
+
+    with pytest.raises(SystemExit) as exit_info:
+        _thin_fork_pull(fork, monkeypatch)
+
+    assert exit_info.value.code == 1
+    assert _head(fork) != pre_custom
+    assert _git(fork, "merge-base", "--is-ancestor", "main", "custom").returncode == 0
+    assert _remote_head(fork, fork_world.origin, "custom") == stale_published
+    assert _git(fork, "status", "--porcelain").stdout.strip() == ""
 
 
 # ---------------------------------------------------------------------------
