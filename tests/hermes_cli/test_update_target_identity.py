@@ -13,7 +13,7 @@ import urllib.request
 
 import pytest
 
-from hermes_cli import main as cli_main, update_cmd, update_receipt
+from hermes_cli import main as cli_main, update_cmd, update_custody, update_receipt
 from hermes_cli.update_inventory import UpdatePlan
 from hermes_cli.update_cmd import _sync_with_upstream_if_needed
 
@@ -21,6 +21,10 @@ from hermes_cli.update_cmd import _sync_with_upstream_if_needed
 def git(root, *args):
     return subprocess.run(['git', *args], cwd=root, check=True, capture_output=True,
                           text=True, encoding='utf-8').stdout.strip()
+
+
+def git_blob(root, spec):
+    return subprocess.run(['git', 'show', spec], cwd=root, check=True, capture_output=True).stdout
 
 
 @pytest.fixture
@@ -129,6 +133,7 @@ def test_branch_update_uses_real_refs_and_completion_request(update_tree, monkey
     if case.startswith('fork-late'):
         local.write_bytes(local_work)
     run = subprocess.run
+    run_command = update_custody.run
     pushes = []
 
     def _upstream_sha():
@@ -148,13 +153,13 @@ def test_branch_update_uses_real_refs_and_completion_request(update_tree, monkey
         if 'merge' in command and '--ff-only' in command and not upstream_move:
             if case == 'no-move':
                 return subprocess.CompletedProcess(command, 0, stdout='', stderr='')
-            result = run(command, *args, **kwargs)
+            result = run_command(command, *args, **kwargs)
             if case in {'wrong-branch', 'fork-upstream-wrong-branch'}:
                 run(['git', 'checkout', '-qb', 'wrong'], cwd=t.clone, check=True, capture_output=True)
             if case == 'fork-upstream-reverted':
                 run(['git', 'reset', '--hard', t.base], cwd=t.clone, check=True, capture_output=True)
             return result
-        result = run(command, *args, **kwargs)
+        result = run_command(command, *args, **kwargs)
         if upstream_move and case.startswith('fork-late'):
             if case.endswith('wrong-branch'):
                 run(['git', 'checkout', '-qb', 'wrong'], cwd=t.clone, check=True, capture_output=True)
@@ -164,7 +169,7 @@ def test_branch_update_uses_real_refs_and_completion_request(update_tree, monkey
             pushes.append(result.returncode)
         return result
 
-    monkeypatch.setattr(subprocess, 'run', fault)
+    monkeypatch.setattr(update_custody, 'run', fault)
     fails = case in {'missing', 'check-missing', 'no-move', 'wrong-branch',
                      'fork-upstream-wrong-branch', 'fork-upstream-reverted',
                      'fork-late-wrong-branch', 'fork-late-reverted'}
@@ -174,7 +179,7 @@ def test_branch_update_uses_real_refs_and_completion_request(update_tree, monkey
         assert error.value.code == 1
         assert t.requests == []
         if case.startswith('fork-late'):
-            assert git(t.clone, 'show', 'stash@{0}:.gitignore') == local_work.decode().strip()
+            assert git_blob(t.clone, 'stash@{0}:.gitignore') == local_work
             assert local.read_bytes() != local_work
     else:
         cli_main.cmd_update(t.args)
@@ -227,7 +232,7 @@ def test_stable_git_uses_remote_identity_without_moving_local_tags(update_tree, 
         git(t.origin, 'branch', 'retained-branch', t.newer)
         t.args.branch = 'retained-branch'
         expected = t.newer
-    run = subprocess.run
+    run = update_custody.run
     calls = []
 
     def guarded_run(command, *args, **kwargs):
@@ -241,7 +246,7 @@ def test_stable_git_uses_remote_identity_without_moving_local_tags(update_tree, 
             return subprocess.CompletedProcess(command, 128, stdout='', stderr='fixture: raw SHA wants disabled')
         return run(command, *args, **kwargs)
 
-    monkeypatch.setattr(subprocess, 'run', guarded_run)
+    monkeypatch.setattr(update_custody, 'run', guarded_run)
     if server == 'fetch-refused':
         with pytest.raises(SystemExit) as error:
             cli_main.cmd_update(t.args)
@@ -460,17 +465,17 @@ def test_update_syntax_failure_restores_pre_update_head(update_tree, monkeypatch
         # Refused before the autostash too: the local work never left the tree, index included.
         assert not git(t.clone, 'stash', 'list')
         assert local.read_bytes() == unstaged
-        assert git(t.clone, 'show', ':.gitignore') == staged.decode().strip()
+        assert git_blob(t.clone, ':.gitignore') == staged
         assert (t.clone / 'notes.txt').read_bytes() == b'untracked local work\n'
         return
     assert not git(t.clone, 'status', '--porcelain')
     assert bool(git(t.clone, 'stash', 'list')) is dirty
     if dirty:
-        assert git(t.clone, 'show', 'stash@{0}^2:.gitignore') == staged.decode().strip()
-        assert git(t.clone, 'show', 'stash@{0}:.gitignore') == unstaged.decode().strip()
+        assert git_blob(t.clone, 'stash@{0}^2:.gitignore') == staged
+        assert git_blob(t.clone, 'stash@{0}:.gitignore') == unstaged
         assert git(t.clone, 'show', 'stash@{0}^3:notes.txt') == 'untracked local work'
         git(t.clone, 'stash', 'apply', '--index')
         assert local.read_bytes() == unstaged
-        assert git(t.clone, 'show', ':.gitignore') == staged.decode().strip()
+        assert git_blob(t.clone, ':.gitignore') == staged
         assert (t.clone / 'notes.txt').read_bytes() == b'untracked local work\n'
 
