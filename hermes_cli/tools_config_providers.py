@@ -11,7 +11,7 @@ from hermes_cli.cli_output import (
     print_info as _print_info, print_success as _print_success, print_warning as _print_warning, prompt as _prompt,
 )
 from hermes_cli.colors import Colors, color
-from hermes_cli.config import cfg_get, get_env_value, load_config, save_config, save_env_value
+from hermes_cli.config import cfg_get, get_env_value, save_config, save_env_value
 from hermes_cli.nous_account import format_nous_portal_entitlement_message
 from hermes_cli.nous_subscription import MANAGED_FEATURE_COVERAGE_CATEGORY, NousSubscriptionFeatures
 from tools.tool_backend_helpers import NOUS_MANAGED_PROVIDER, fal_key_is_configured
@@ -930,7 +930,7 @@ def _configure_provider(provider: dict, config: dict, *, force_fresh: bool = Tru
 
     if not env_vars:
         if provider.get("post_setup"):
-            _run_post_setup(provider["post_setup"], config)
+            _run_post_setup(provider["post_setup"])
         _print_success(f"  {provider['name']} - no configuration needed!")
         if managed_feature:
             _print_info("  Requests for this tool will be billed to your Nous subscription.")
@@ -942,7 +942,7 @@ def _configure_provider(provider: dict, config: dict, *, force_fresh: bool = Tru
 
     all_configured = _prompt_env_vars(env_vars, reconfigure=reconfigure)
     if provider.get("post_setup") and all_configured:
-        _run_post_setup(provider["post_setup"], config)
+        _run_post_setup(provider["post_setup"])
     if all_configured:
         if not reconfigure:
             _print_success(f"  {provider['name']} configured!")
@@ -958,7 +958,9 @@ def _configure_vision_backend(config: dict) -> None:
     """Interactive vision-backend configuration (``auxiliary.vision.{provider,model,base_url}``).
     Offers any authenticated provider + model (same surface as ``hermes model``) or a custom endpoint
     rather than forcing OpenRouter. "Auto" leaves the keys empty so the resolver uses the main-model
-    fallback chain."""
+    fallback chain.
+    Mutates and saves the CALLER's ``config``: an enclosing ``hermes tools`` flow saves that same object
+    afterwards, so a private ``load_config()`` here would be discarded by that later write."""
     from hermes_cli.tools_config import _cfg_section, _prompt_choice
 
     print()
