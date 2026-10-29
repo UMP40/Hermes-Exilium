@@ -698,10 +698,16 @@ def _iter_windows_list_processes(listing: str):
 
 
 def _windows_process_listing() -> str | None:
-    """``CommandLine=``/``ProcessId=`` LIST output for every Windows process (wmic, else Get-CimInstance), or None.
-    ``bounded_probe_run``, NOT ``subprocess.run(timeout=...)``: run()'s post-timeout cleanup joins pipe
-    readers unbounded and a conhost.exe holding duplicated handles wedges the caller forever; it also
-    hides the console window this windowless pythonw backend would flash."""
+    """Read Windows argv natively, falling back to bounded wmic/CIM probes.
+
+    WMI can stall on a healthy machine, so it is only a fallback when native
+    process access is unavailable, never a prerequisite for gateway control.
+    """
+    from hermes_cli.gateway_windows import _native_process_listing
+
+    native = _native_process_listing()
+    if native is not None:
+        return native
     # Prefer wmic when present (fast, stable output format). On modern Windows 11 / Win 10 late builds, wmic
     # has been removed as part of the WMIC deprecation — fall back to PowerShell's Get-CimInstance. A spawn
     # failure or timeout (result is None) trips the fallback. ``hermes update`` hung exactly there on

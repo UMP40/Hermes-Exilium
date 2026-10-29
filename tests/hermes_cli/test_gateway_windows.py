@@ -16,6 +16,33 @@ from hermes_cli import setup
 _BREAKAWAY_MARKER = "_HERMES_GATEWAY_BREAKAWAY"
 
 
+@pytest.mark.spawns_gateway_lookalike
+@pytest.mark.platforms("windows")
+def test_process_scan_works_without_wmi_and_rejects_inline_gateway_text(monkeypatch):
+    import sys
+    from gateway.status import looks_like_gateway_command_line
+    from hermes_cli import _subprocess_compat
+
+    def no_wmi(*args, **kwargs):
+        pytest.fail("Native process scanning must not depend on WMI availability")
+
+    monkeypatch.setattr(_subprocess_compat, "bounded_probe_run", no_wmi)
+    argv = [sys.executable, "-c", "import sys; sys.stdin.read()", "网关 管理探测", "hermes gateway run"]
+    with subprocess.Popen(
+        argv, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        creationflags=_subprocess_compat.windows_hide_flags(),
+    ) as child:
+        try:
+            listing = gateway._windows_process_listing()
+            rows = dict(gateway._iter_windows_list_processes(listing))
+            assert child.pid in rows
+            assert "网关 管理探测" in rows[child.pid]
+            assert not looks_like_gateway_command_line(rows[child.pid])
+        finally:
+            child.terminate()
+            child.wait(timeout=10)
+
+
 def test_exec_schtasks_decodes_ansi_output_under_utf8_mode(monkeypatch):
     """schtasks emits the ANSI code page even when Python runs in UTF-8 mode; a non-ASCII account
     path in the task XML must survive `_exec_schtasks` intact or `scheduled_task_drift` reports

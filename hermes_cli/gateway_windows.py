@@ -63,6 +63,28 @@ _TASK_RESTART_COUNT = 999
 _GATEWAY_ENV = (("PYTHONIOENCODING", "utf-8"), ("HERMES_GATEWAY_DETACHED", "1"), ("HERMES_SUPERVISED_CHILD", "1"))
 
 
+def _native_process_listing() -> str | None:
+    """Read argv through native process handles instead of the WMI provider.
+
+    CIM can hang even while the gateway is healthy. Preserve the LIST format
+    and shared identity matcher; inaccessible processes remain unclaimed.
+    """
+    try:
+        import psutil
+    except ImportError:
+        return None
+    rows: list[str] = []
+    try:
+        for process in psutil.process_iter(["pid", "cmdline"]):
+            argv = process.info["cmdline"]
+            if argv:
+                command = subprocess.list2cmdline(argv).replace("\r", " ").replace("\n", " ")
+                rows.append(f"CommandLine={command}\nProcessId={process.info['pid']}\n")
+    except (OSError, psutil.Error):
+        return None
+    return "\n".join(rows)
+
+
 def _schtasks_encoding() -> str:
     """Console encoding for ``schtasks.exe`` output: localized Windows emits the OEM/ANSI code page,
     not UTF-8, and decoding with the wrong codec raised UnicodeDecodeError in subprocess' reader
